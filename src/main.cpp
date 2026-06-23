@@ -5,6 +5,7 @@
 #include "semantic.h"
 #include "codegen.h"
 #include "optimizer.h"
+#include <sstream>
 
 int main(int argc, char* argv[]) {
     bool optimize = false;

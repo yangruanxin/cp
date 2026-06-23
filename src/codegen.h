@@ -2,7 +2,6 @@
 #define CODEGEN_H
 
 #include "ast.h"
-#include "symbol_table.h"
 #include <string>
 #include <memory>
 #include <unordered_map>
