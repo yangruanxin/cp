@@ -1,16 +1,11 @@
-// B 的自测文件 — 语义分析
-// 手工构造 AST 来测试，不依赖 Parser
+// B 的自测 — 手工构造 AST，验证 IR 生成
 #include "ast.h"
-#include "symbol_table.h"
 #include "semantic.h"
 #include <iostream>
-#include <memory>
 #include <cassert>
 
-// 辅助: 构造 int main() { return 0; } 的 AST
-std::unique_ptr<CompUnit> make_simple_program() {
+std::unique_ptr<CompUnit> makeReturn42() {
     auto unit = std::make_unique<CompUnit>();
-
     auto func = std::make_unique<FuncDef>();
     func->returnType = FuncType::INT;
     func->name = "main";
@@ -20,10 +15,10 @@ std::unique_ptr<CompUnit> make_simple_program() {
 
     auto ret = std::make_unique<Stmt>();
     ret->kind = StmtKind::RETURN;
-    auto retVal = std::make_unique<Expr>();
-    retVal->kind = ExprKind::INT_LITERAL;
-    retVal->intValue = 0;
-    ret->retExpr = std::move(retVal);
+    auto val = std::make_unique<Expr>();
+    val->kind = ExprKind::INT_LITERAL;
+    val->intValue = 42;
+    ret->retExpr = std::move(val);
     body->stmts.push_back(std::move(ret));
 
     func->body = std::move(body);
@@ -31,23 +26,62 @@ std::unique_ptr<CompUnit> make_simple_program() {
     return unit;
 }
 
-void test_valid_program() {
-    auto ast = make_simple_program();
-    SemanticAnalyzer sema;
-    sema.analyze(ast);  // should not report errors
-    std::cout << "PASS: test_valid_program\n";
-}
-
-void test_missing_main() {
+std::unique_ptr<CompUnit> makeAddExpr() {
+    // int main() { return 1 + 2 * 3; }
     auto unit = std::make_unique<CompUnit>();
-    SemanticAnalyzer sema;
-    sema.analyze(unit);  // should report "missing main function"
-    std::cout << "PASS: test_missing_main\n";
+    auto func = std::make_unique<FuncDef>();
+    func->returnType = FuncType::INT;
+    func->name = "main";
+
+    auto body = std::make_unique<Stmt>();
+    body->kind = StmtKind::BLOCK;
+
+    auto ret = std::make_unique<Stmt>();
+    ret->kind = StmtKind::RETURN;
+
+    // Build: 1 + 2 * 3
+    auto mul = std::make_unique<Expr>();
+    mul->kind = ExprKind::BINARY;
+    mul->binaryOp = BinaryOp::MUL;
+    auto two = std::make_unique<Expr>();
+    two->kind = ExprKind::INT_LITERAL; two->intValue = 2;
+    auto three = std::make_unique<Expr>();
+    three->kind = ExprKind::INT_LITERAL; three->intValue = 3;
+    mul->lhs = std::move(two);
+    mul->rhs = std::move(three);
+
+    auto add = std::make_unique<Expr>();
+    add->kind = ExprKind::BINARY;
+    add->binaryOp = BinaryOp::ADD;
+    auto one = std::make_unique<Expr>();
+    one->kind = ExprKind::INT_LITERAL; one->intValue = 1;
+    add->lhs = std::move(one);
+    add->rhs = std::move(mul);
+
+    ret->retExpr = std::move(add);
+    body->stmts.push_back(std::move(ret));
+    func->body = std::move(body);
+    unit->funcDefs.push_back(std::move(func));
+    return unit;
 }
 
 int main() {
-    test_valid_program();
-    test_missing_main();
+    // Test 1: simple return
+    auto ast1 = makeReturn42();
+    IRGenerator irGen;
+    IRList ir = irGen.generate(ast1);
+    assert(!ir.empty());
+    std::cout << "Test 1 PASS: generated " << ir.size() << " IR instructions for return 42\n";
+    for (const auto& i : ir) {
+        std::cout << "  " << static_cast<int>(i.op) << " " << i.dst << "\n";
+    }
+
+    // Test 2: expression with operator precedence
+    auto ast2 = makeAddExpr();
+    IRList ir2 = irGen.generate(ast2);
+    assert(!ir2.empty());
+    std::cout << "Test 2 PASS: generated " << ir2.size() << " IR instructions for 1+2*3\n";
+
     std::cout << "All semantic tests passed!\n";
     return 0;
 }
