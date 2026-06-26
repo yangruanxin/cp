@@ -1,9 +1,9 @@
 #include "semantic.h"
 #include <iostream>
-#include <cassert>
 
 IRGenerator::IRGenerator()
-    : labelCounter(0), tempCounter(0), inLoop(false), hasReturn(false) {}
+    : labelCounter(0), tempCounter(0), inLoop(false), hasReturn(false),
+      hasError(false) {}
 
 std::string IRGenerator::newLabel() {
     return ".L" + std::to_string(labelCounter++);
@@ -13,44 +13,121 @@ std::string IRGenerator::newTemp() {
     return "%t" + std::to_string(tempCounter++);
 }
 
+void IRGenerator::error(const std::string& message) {
+    hasError = true;
+    std::cerr << "Semantic error: " << message << "\n";
+}
+
 IRList IRGenerator::generate(const std::unique_ptr<CompUnit>& unit) {
     ir.clear();
+    labelCounter = 0;
+    tempCounter = 0;
+    inLoop = false;
+    hasReturn = false;
+    hasError = false;
+    symTable = SymbolTable();
     visitCompUnit(unit);
-    return std::move(ir);
+    return ir;
+}
+
+ConstEvalResult IRGenerator::evalConstExpr(const std::unique_ptr<Expr>& expr) {
+    if (!expr) return {};
+
+    switch (expr->kind) {
+        case ExprKind::INT_LITERAL:
+            return {true, expr->intValue};
+        case ExprKind::IDENTIFIER: {
+            auto* sym = symTable.lookup(expr->name);
+            if (!sym || sym->isFunction || !sym->valueKnown) return {};
+            return {true, sym->value};
+        }
+        case ExprKind::FUNC_CALL:
+            return {};
+        case ExprKind::UNARY: {
+            auto value = evalConstExpr(expr->operand);
+            if (!value.known) return {};
+            switch (expr->unaryOp) {
+                case UnaryOp::PLUS:  return {true, value.value};
+                case UnaryOp::MINUS: return {true, -value.value};
+                case UnaryOp::NOT:   return {true, value.value == 0 ? 1 : 0};
+            }
+            return {};
+        }
+        case ExprKind::BINARY: {
+            auto left = evalConstExpr(expr->lhs);
+            auto right = evalConstExpr(expr->rhs);
+            if (!left.known || !right.known) return {};
+
+            switch (expr->binaryOp) {
+                case BinaryOp::ADD: return {true, left.value + right.value};
+                case BinaryOp::SUB: return {true, left.value - right.value};
+                case BinaryOp::MUL: return {true, left.value * right.value};
+                case BinaryOp::DIV:
+                    if (right.value == 0) return {};
+                    return {true, left.value / right.value};
+                case BinaryOp::MOD:
+                    if (right.value == 0) return {};
+                    return {true, left.value % right.value};
+                case BinaryOp::LT:  return {true, left.value <  right.value ? 1 : 0};
+                case BinaryOp::GT:  return {true, left.value >  right.value ? 1 : 0};
+                case BinaryOp::LE:  return {true, left.value <= right.value ? 1 : 0};
+                case BinaryOp::GE:  return {true, left.value >= right.value ? 1 : 0};
+                case BinaryOp::EQ:  return {true, left.value == right.value ? 1 : 0};
+                case BinaryOp::NE:  return {true, left.value != right.value ? 1 : 0};
+                case BinaryOp::AND: return {true, (left.value != 0 && right.value != 0) ? 1 : 0};
+                case BinaryOp::OR:  return {true, (left.value != 0 || right.value != 0) ? 1 : 0};
+            }
+            return {};
+        }
+    }
+    return {};
+}
+
+void IRGenerator::defineVariable(const std::string& name, bool isConst, bool isGlobal,
+                                 int value, bool valueKnown) {
+    if (!symTable.addVariable(name, isConst, isGlobal, value, valueKnown)) {
+        error("redefinition of '" + name + "'");
+    }
+}
+
+std::string IRGenerator::makeBool(const std::string& value) {
+    std::string result = newTemp();
+    std::string zero = newTemp();
+    ir.push_back(IRInstr::li(zero, 0));
+    ir.push_back(IRInstr::bin(IROp::NE, result, value, zero));
+    return result;
 }
 
 void IRGenerator::visitCompUnit(const std::unique_ptr<CompUnit>& unit) {
-    // First pass: register all functions
-    for (const auto& func : unit->funcDefs) {
-        std::vector<FuncType> paramTypes;
-        for (size_t i = 0; i < func->params.size(); i++) {
-            paramTypes.push_back(FuncType::INT);
-        }
-        symTable.addFunction(func->name, func->returnType, paramTypes);
-    }
-
-    // Second pass: handle global variable declarations
     for (const auto& decl : unit->decls) {
-        if (decl->kind == StmtKind::DECL || decl->kind == StmtKind::CONST_DECL) {
-            bool isConst = (decl->kind == StmtKind::CONST_DECL);
-            int val = 0;
-            if (decl->init) {
-                val = [&]() { /* simplified const eval */ return 0; }();
-            }
-            symTable.addVariable(decl->varName, isConst, true, val, true);
-            ir.push_back(IRInstr::decl(decl->varName, true, val));
+        bool isConst = decl->kind == StmtKind::CONST_DECL;
+        auto constValue = evalConstExpr(decl->init);
+        if (isConst && !constValue.known) {
+            error("const '" + decl->varName + "' initializer is not a compile-time constant");
+        }
+        if (!constValue.known) {
+            error("global variable '" + decl->varName + "' initializer must be constant in this IR backend");
+        }
+        int value = constValue.known ? constValue.value : 0;
+        defineVariable(decl->varName, isConst, true, value, isConst || constValue.known);
+        ir.push_back(IRInstr::decl(decl->varName, true, value));
+    }
+
+    for (const auto& func : unit->funcDefs) {
+        std::vector<FuncType> paramTypes(func->params.size(), FuncType::INT);
+        if (!symTable.addFunction(func->name, func->returnType, paramTypes)) {
+            error("redefinition of function '" + func->name + "'");
         }
     }
 
-    // Third pass: generate IR for each function
+    auto* mainSym = symTable.lookup("main");
+    if (!mainSym || !mainSym->isFunction ||
+        mainSym->funcType != FuncType::INT || !mainSym->paramTypes.empty()) {
+        error("program must define 'int main()'");
+    }
+
     for (const auto& func : unit->funcDefs) {
         visitFuncDef(func);
-    }
-
-    // Check main function exists
-    auto* mainSym = symTable.lookup("main");
-    if (!mainSym || !mainSym->isFunction) {
-        std::cerr << "Semantic error: missing main function\n";
     }
 }
 
@@ -62,80 +139,87 @@ void IRGenerator::visitFuncDef(const std::unique_ptr<FuncDef>& func) {
 
     symTable.enterScope();
     for (const auto& p : func->params) {
-        symTable.addVariable(p.name, false, false);
+        defineVariable(p.name, false, false);
         ir.push_back(IRInstr::decl(p.name, false, 0));
     }
-    visitStmt(func->body);
+
+    bool allPathsReturn = visitStmt(func->body);
     symTable.exitScope();
 
-    if (currentFuncReturnType == FuncType::INT && !hasReturn) {
-        std::cerr << "Semantic error: function '" << func->name
-                  << "' must return a value on all paths\n";
+    if (currentFuncReturnType == FuncType::INT && !allPathsReturn) {
+        error("function '" + func->name + "' must return a value on all paths");
     }
 
     ir.push_back(IRInstr::funcEnd());
 }
 
-void IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
+bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
+    if (!stmt) return false;
+
     switch (stmt->kind) {
         case StmtKind::BLOCK: {
             symTable.enterScope();
+            bool returned = false;
             for (const auto& s : stmt->stmts) {
-                visitStmt(s);
+                bool stmtReturns = visitStmt(s);
+                returned = returned || stmtReturns;
             }
             symTable.exitScope();
-            break;
+            return returned;
         }
         case StmtKind::EMPTY:
-            break;
-        case StmtKind::EXPR: {
-            std::string tmp = visitExpr(stmt->expr);
-            (void)tmp;
-            break;
-        }
+            return false;
+        case StmtKind::EXPR:
+            visitExpr(stmt->expr, true);
+            return false;
         case StmtKind::ASSIGN: {
             auto* sym = symTable.lookup(stmt->varName);
             if (!sym) {
-                std::cerr << "Semantic error: undefined variable '" << stmt->varName << "'\n";
+                error("undefined variable '" + stmt->varName + "'");
+            } else if (sym->isFunction) {
+                error("cannot assign to function '" + stmt->varName + "'");
             } else if (sym->isConst) {
-                std::cerr << "Semantic error: cannot assign to const '" << stmt->varName << "'\n";
+                error("cannot assign to const '" + stmt->varName + "'");
             }
             std::string val = visitExpr(stmt->expr);
-            // Store to variable
-            if (sym && sym->isGlobal) {
-                ir.push_back(IRInstr::store(stmt->varName, 0, val));
-            } else {
-                ir.push_back(IRInstr::store(stmt->varName, 0, val));
-            }
-            break;
+            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            return false;
         }
-        case StmtKind::DECL: {
-            std::string val = visitExpr(stmt->init);
-            symTable.addVariable(stmt->varName, false, symTable.isGlobalScope());
-            ir.push_back(IRInstr::decl(stmt->varName, symTable.isGlobalScope(), 0));
-            ir.push_back(IRInstr::assign(stmt->varName, val));
-            break;
-        }
+        case StmtKind::DECL:
         case StmtKind::CONST_DECL: {
-            std::string val = visitExpr(stmt->init);
-            symTable.addVariable(stmt->varName, true, symTable.isGlobalScope());
-            ir.push_back(IRInstr::decl(stmt->varName, symTable.isGlobalScope(), 0));
-            ir.push_back(IRInstr::assign(stmt->varName, val));
-            break;
+            bool isConst = stmt->kind == StmtKind::CONST_DECL;
+            auto constValue = evalConstExpr(stmt->init);
+            if (isConst && !constValue.known) {
+                error("const '" + stmt->varName + "' initializer is not a compile-time constant");
+            }
+            defineVariable(stmt->varName, isConst, symTable.isGlobalScope(),
+                           constValue.known ? constValue.value : 0,
+                           isConst && constValue.known);
+            ir.push_back(IRInstr::decl(stmt->varName, symTable.isGlobalScope(),
+                                       constValue.known ? constValue.value : 0));
+            std::string val = constValue.known ? newTemp() : visitExpr(stmt->init);
+            if (constValue.known) {
+                ir.push_back(IRInstr::li(val, constValue.value));
+            }
+            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            return false;
         }
         case StmtKind::IF: {
             std::string cond = visitExpr(stmt->cond);
+            std::string notCond = newTemp();
             std::string elseLabel = newLabel();
             std::string endLabel = newLabel();
-            ir.push_back(IRInstr::ifGoto(cond, elseLabel));
-            visitStmt(stmt->thenStmt);
+            ir.push_back(IRInstr::una(IROp::NOT, notCond, cond));
+            ir.push_back(IRInstr::ifGoto(notCond, elseLabel));
+            bool thenReturns = visitStmt(stmt->thenStmt);
             ir.push_back(IRInstr::goto_(endLabel));
-            ir.push_back(IRInstr::label(elseLabel));
+            ir.push_back(IRInstr::labelInstr(elseLabel));
+            bool elseReturns = false;
             if (stmt->elseStmt) {
-                visitStmt(stmt->elseStmt);
+                elseReturns = visitStmt(stmt->elseStmt);
             }
-            ir.push_back(IRInstr::label(endLabel));
-            break;
+            ir.push_back(IRInstr::labelInstr(endLabel));
+            return stmt->elseStmt != nullptr && thenReturns && elseReturns;
         }
         case StmtKind::WHILE: {
             std::string beginLabel = newLabel();
@@ -147,49 +231,58 @@ void IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
             loopBeginLabel = beginLabel;
             loopEndLabel = endLabel;
 
-            ir.push_back(IRInstr::label(beginLabel));
+            ir.push_back(IRInstr::labelInstr(beginLabel));
             std::string cond = visitExpr(stmt->cond);
-            ir.push_back(IRInstr::ifGoto(cond, endLabel));
+            std::string notCond = newTemp();
+            ir.push_back(IRInstr::una(IROp::NOT, notCond, cond));
+            ir.push_back(IRInstr::ifGoto(notCond, endLabel));
             visitStmt(stmt->body);
             ir.push_back(IRInstr::goto_(beginLabel));
-            ir.push_back(IRInstr::label(endLabel));
+            ir.push_back(IRInstr::labelInstr(endLabel));
 
             inLoop = outerLoop;
             loopBeginLabel = outerBegin;
             loopEndLabel = outerEnd;
-            break;
+            return false;
         }
         case StmtKind::BREAK:
             if (!inLoop) {
-                std::cerr << "Semantic error: break outside loop\n";
+                error("break outside loop");
             } else {
                 ir.push_back(IRInstr::goto_(loopEndLabel));
             }
-            break;
+            return false;
         case StmtKind::CONTINUE:
             if (!inLoop) {
-                std::cerr << "Semantic error: continue outside loop\n";
+                error("continue outside loop");
             } else {
                 ir.push_back(IRInstr::goto_(loopBeginLabel));
             }
-            break;
+            return false;
         case StmtKind::RETURN:
             hasReturn = true;
             if (currentFuncReturnType == FuncType::VOID && stmt->retExpr) {
-                std::cerr << "Semantic error: void function should not return a value\n";
+                error("void function should not return a value");
             } else if (currentFuncReturnType == FuncType::INT && !stmt->retExpr) {
-                std::cerr << "Semantic error: int function must return a value\n";
+                error("int function must return a value");
             }
             if (stmt->retExpr) {
                 std::string val = visitExpr(stmt->retExpr);
                 ir.push_back(IRInstr::assign("a0", val));
             }
             ir.push_back(IRInstr::ret());
-            break;
+            return true;
     }
+    return false;
 }
 
-std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr) {
+std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr, bool allowVoid) {
+    if (!expr) {
+        std::string t = newTemp();
+        ir.push_back(IRInstr::li(t, 0));
+        return t;
+    }
+
     switch (expr->kind) {
         case ExprKind::INT_LITERAL: {
             std::string t = newTemp();
@@ -199,7 +292,13 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr) {
         case ExprKind::IDENTIFIER: {
             auto* sym = symTable.lookup(expr->name);
             if (!sym) {
-                std::cerr << "Semantic error: undefined identifier '" << expr->name << "'\n";
+                error("undefined identifier '" + expr->name + "'");
+                std::string t = newTemp();
+                ir.push_back(IRInstr::li(t, 0));
+                return t;
+            }
+            if (sym->isFunction) {
+                error("function '" + expr->name + "' used as a value");
                 std::string t = newTemp();
                 ir.push_back(IRInstr::li(t, 0));
                 return t;
@@ -226,6 +325,39 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr) {
             return t;
         }
         case ExprKind::BINARY: {
+            if (expr->binaryOp == BinaryOp::AND) {
+                std::string result = newTemp();
+                std::string falseLabel = newLabel();
+                std::string endLabel = newLabel();
+                std::string lhs = visitExpr(expr->lhs);
+                std::string lhsFalse = newTemp();
+                ir.push_back(IRInstr::una(IROp::NOT, lhsFalse, lhs));
+                ir.push_back(IRInstr::ifGoto(lhsFalse, falseLabel));
+                std::string rhs = visitExpr(expr->rhs);
+                std::string rhsBool = makeBool(rhs);
+                ir.push_back(IRInstr::assign(result, rhsBool));
+                ir.push_back(IRInstr::goto_(endLabel));
+                ir.push_back(IRInstr::labelInstr(falseLabel));
+                ir.push_back(IRInstr::li(result, 0));
+                ir.push_back(IRInstr::labelInstr(endLabel));
+                return result;
+            }
+            if (expr->binaryOp == BinaryOp::OR) {
+                std::string result = newTemp();
+                std::string trueLabel = newLabel();
+                std::string endLabel = newLabel();
+                std::string lhs = visitExpr(expr->lhs);
+                ir.push_back(IRInstr::ifGoto(lhs, trueLabel));
+                std::string rhs = visitExpr(expr->rhs);
+                std::string rhsBool = makeBool(rhs);
+                ir.push_back(IRInstr::assign(result, rhsBool));
+                ir.push_back(IRInstr::goto_(endLabel));
+                ir.push_back(IRInstr::labelInstr(trueLabel));
+                ir.push_back(IRInstr::li(result, 1));
+                ir.push_back(IRInstr::labelInstr(endLabel));
+                return result;
+            }
+
             std::string lhs = visitExpr(expr->lhs);
             std::string rhs = visitExpr(expr->rhs);
             std::string t = newTemp();
@@ -248,45 +380,32 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr) {
                 }
                 return IROp::ADD;
             };
-
-            if (expr->binaryOp == BinaryOp::AND) {
-                // Short-circuit: t = lhs && rhs
-                std::string Lfalse = newLabel();
-                std::string Lend = newLabel();
-                ir.push_back(IRInstr::assign(t, lhs));
-                ir.push_back(IRInstr::ifGoto(t, Lfalse));
-                std::string r = visitExpr(expr->rhs);
-                ir.push_back(IRInstr::assign(t, r));
-                ir.push_back(IRInstr::goto_(Lend));
-                ir.push_back(IRInstr::label(Lfalse));
-                ir.push_back(IRInstr::li(t, 0));
-                ir.push_back(IRInstr::label(Lend));
-            } else if (expr->binaryOp == BinaryOp::OR) {
-                // Short-circuit: t = lhs || rhs
-                std::string Ltrue = newLabel();
-                std::string Lend = newLabel();
-                ir.push_back(IRInstr::assign(t, lhs));
-                ir.push_back(IRInstr::ifGoto(t, Ltrue));
-                std::string r = visitExpr(expr->rhs);
-                ir.push_back(IRInstr::assign(t, r));
-                ir.push_back(IRInstr::goto_(Lend));
-                ir.push_back(IRInstr::label(Ltrue));
-                ir.push_back(IRInstr::li(t, 1));
-                ir.push_back(IRInstr::label(Lend));
-            } else {
-                ir.push_back(IRInstr::bin(opToIROp(expr->binaryOp), t, lhs, rhs));
-            }
+            ir.push_back(IRInstr::bin(opToIROp(expr->binaryOp), t, lhs, rhs));
             return t;
         }
         case ExprKind::FUNC_CALL: {
+            auto* sym = symTable.lookup(expr->name);
+            if (!sym || !sym->isFunction) {
+                error("undefined function '" + expr->name + "'");
+            } else {
+                if (sym->paramTypes.size() != expr->args.size()) {
+                    error("function '" + expr->name + "' called with wrong number of arguments");
+                }
+                if (sym->funcType == FuncType::VOID && !allowVoid) {
+                    error("void function '" + expr->name + "' used as a value");
+                }
+            }
             for (size_t i = 0; i < expr->args.size(); i++) {
                 std::string argVal = visitExpr(expr->args[i]);
-                ir.push_back(IRInstr::arg(argVal, (int)i));
+                ir.push_back(IRInstr::arg(argVal, static_cast<int>(i)));
             }
             std::string t = newTemp();
             ir.push_back(IRInstr::call(t, expr->name));
             return t;
         }
     }
-    return newTemp();
+
+    std::string t = newTemp();
+    ir.push_back(IRInstr::li(t, 0));
+    return t;
 }

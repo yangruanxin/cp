@@ -24,12 +24,13 @@ public:
     void enterScope();
     void exitScope();
 
-    void addVariable(const std::string& name, bool isConst, bool isGlobal,
+    bool addVariable(const std::string& name, bool isConst, bool isGlobal,
                      int value = 0, bool valueKnown = false);
-    void addFunction(const std::string& name, FuncType returnType,
+    bool addFunction(const std::string& name, FuncType returnType,
                      const std::vector<FuncType>& paramTypes);
 
     Symbol* lookup(const std::string& name);
+    Symbol* lookupCurrentScope(const std::string& name);
     bool isGlobalScope() const;
 
 private:

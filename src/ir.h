@@ -58,38 +58,41 @@ struct IRInstr {
     std::string label;     // 标签名/函数名
 
     // ---- 便捷构造器 ----
-    static IRInstr label(const std::string& l)       { return {LABEL, {}, {}, {}, 0, l}; }
-    static IRInstr goto_(const std::string& l)       { return {GOTO, {}, {}, {}, 0, l}; }
+    static IRInstr labelInstr(const std::string& l)  { return {IROp::LABEL, {}, {}, {}, 0, l}; }
+    static IRInstr goto_(const std::string& l)       { return {IROp::GOTO, {}, {}, {}, 0, l}; }
     static IRInstr ifGoto(const std::string& c, const std::string& l) {
-        return {IF_GOTO, {}, c, {}, 0, l};
+        return {IROp::IF_GOTO, {}, c, {}, 0, l};
     }
     static IRInstr bin(IROp op, const std::string& d, const std::string& s1, const std::string& s2) {
         return {op, d, s1, s2, 0, {}};
     }
+    static IRInstr add(const std::string& d, const std::string& s1, const std::string& s2) {
+        return bin(IROp::ADD, d, s1, s2);
+    }
     static IRInstr una(IROp op, const std::string& d, const std::string& s) {
         return {op, d, s, {}, 0, {}};
     }
-    static IRInstr li(const std::string& d, int v)  { return {LOAD_IMM, d, {}, {}, v, {}}; }
+    static IRInstr li(const std::string& d, int v)  { return {IROp::LOAD_IMM, d, {}, {}, v, {}}; }
     static IRInstr assign(const std::string& d, const std::string& s) {
-        return {ASSIGN, d, s, {}, 0, {}};
+        return {IROp::ASSIGN, d, s, {}, 0, {}};
     }
     static IRInstr decl(const std::string& name, bool global, int initVal) {
-        return {DECL, name, global ? "global" : "local", {}, initVal, {}};
+        return {IROp::DECL, name, global ? "global" : "local", {}, initVal, {}};
     }
     static IRInstr load(const std::string& d, const std::string& base, int off) {
-        return {LOAD, d, base, {}, off, {}};
+        return {IROp::LOAD, d, base, {}, off, {}};
     }
     static IRInstr store(const std::string& base, int off, const std::string& val) {
-        return {STORE, base, val, {}, off, {}};
+        return {IROp::STORE, base, val, {}, off, {}};
     }
     static IRInstr call(const std::string& d, const std::string& fn) {
-        return {CALL, d, {}, {}, 0, fn};
+        return {IROp::CALL, d, {}, {}, 0, fn};
     }
-    static IRInstr ret()                            { return {RETURN, {}, {}, {}, 0, {}}; }
-    static IRInstr funcBegin(const std::string& n)  { return {FUNC_BEGIN, {}, {}, {}, 0, n}; }
-    static IRInstr funcEnd()                        { return {FUNC_END, {}, {}, {}, 0, {}}; }
+    static IRInstr ret()                            { return {IROp::RETURN, {}, {}, {}, 0, {}}; }
+    static IRInstr funcBegin(const std::string& n)  { return {IROp::FUNC_BEGIN, {}, {}, {}, 0, n}; }
+    static IRInstr funcEnd()                        { return {IROp::FUNC_END, {}, {}, {}, 0, {}}; }
     static IRInstr arg(const std::string& val, int idx) {
-        return {ARG, {}, val, {}, idx, {}};
+        return {IROp::ARG, {}, val, {}, idx, {}};
     }
 };
 

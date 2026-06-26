@@ -44,9 +44,9 @@ int main() {
         IRInstr::ifGoto("t0", ".L_else"),
         IRInstr::li("a0", 10),
         IRInstr::goto_(".L_end"),
-        IRInstr::label(".L_else"),
+        IRInstr::labelInstr(".L_else"),
         IRInstr::li("a0", 20),
-        IRInstr::label(".L_end"),
+        IRInstr::labelInstr(".L_end"),
         IRInstr::ret(),
         IRInstr::funcEnd(),
     };
