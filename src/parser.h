@@ -42,4 +42,6 @@ private:
     std::unique_ptr<Expr> parsePrimaryExpr();
 };
 
+std::string dumpAst(const std::unique_ptr<CompUnit>& unit);
+
 #endif

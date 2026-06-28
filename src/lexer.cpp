@@ -1,6 +1,7 @@
 #include "lexer.h"
-#include <unordered_map>
 #include <cctype>
+#include <stdexcept>
+#include <unordered_map>
 
 Lexer::Lexer(const std::string& source)
     : source(source), pos(0), line(1), column(1) {}
@@ -24,15 +25,23 @@ void Lexer::skipWhitespaceAndComments() {
         } else if (c == '/' && pos + 1 < source.size()) {
             char next = source[pos + 1];
             if (next == '/') {
-                while (pos < source.size() && advance() != '\n');
+                while (pos < source.size() && advance() != '\n') {
+                }
             } else if (next == '*') {
-                advance(); advance();
+                advance();
+                advance();
+                bool closed = false;
                 while (pos < source.size()) {
                     if (peek() == '*' && pos + 1 < source.size() && source[pos + 1] == '/') {
-                        advance(); advance();
+                        advance();
+                        advance();
+                        closed = true;
                         break;
                     }
                     advance();
+                }
+                if (!closed) {
+                    throw std::runtime_error("Unterminated block comment");
                 }
             } else {
                 break;
@@ -144,7 +153,7 @@ std::vector<Token> Lexer::tokenize() {
                         advance();
                         tokens.push_back({TokenType::AND, "&&", line, startCol});
                     } else {
-                        // error
+                        throw std::runtime_error("Unexpected character '&'");
                     }
                     break;
                 case '|':
@@ -152,10 +161,11 @@ std::vector<Token> Lexer::tokenize() {
                         advance();
                         tokens.push_back({TokenType::OR, "||", line, startCol});
                     } else {
-                        // error
+                        throw std::runtime_error("Unexpected character '|'");
                     }
                     break;
-                default: break;
+                default:
+                    throw std::runtime_error(std::string("Unexpected character '") + c + "'");
             }
         }
     }
