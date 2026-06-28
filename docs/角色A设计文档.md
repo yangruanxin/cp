@@ -1,31 +1,40 @@
-# 角色 A 设计文档：词法分析器与语法分析器设计
+# 角色 A 协作文档：词法分析与语法分析接口说明
 
-## 1. 设计目标
+## 1. 角色定位
 
-角色 A 负责把 ToyC 源码文本转成统一的 AST，作为后续语义分析与 IR 生成的输入。其核心职责是：
+角色 A 负责把 ToyC 源码文本转换为统一的 AST，作为后续语义分析、IR 生成和代码生成的输入。当前已完成的前端闭环包括：
 
-- 将源字符串切分为规范的 token 序列；
-- 根据 ToyC 语法规则构建抽象语法树；
-- 通过清晰的接口向后续阶段提供稳定输入。
+- 词法分析：识别关键字、标识符、数字、运算符、分隔符和文件结束符
+- 语法分析：构建表达式、语句、函数定义和编译单元 AST
+- 调试能力：提供 AST 输出函数，方便联调和排查问题
+- 自测覆盖：词法器和解析器的回归测试已加入
 
-## 2. 整体架构
+## 2. 代码入口与文件说明
 
-### 2.1 输入与输出
+### 2.1 主要文件
 
-- 输入：ToyC 源码字符串。
-- 输出：`CompUnit` 形式的 AST 根节点。
+- [src/lexer.h](../src/lexer.h) / [src/lexer.cpp](../src/lexer.cpp)
+  - 词法分析器实现
+- [src/parser.h](../src/parser.h) / [src/parser.cpp](../src/parser.cpp)
+  - 语法分析器实现
+- [src/ast.h](../src/ast.h)
+  - AST 的核心数据结构定义
+- [tests/test_lexer.cpp](../tests/test_lexer.cpp)
+  - 词法分析自测
+- [tests/test_parser.cpp](../tests/test_parser.cpp)
+  - 语法分析自测
 
-### 2.2 组件分工
+### 2.2 对外接口
 
-- 词法分析器：负责识别 token，忽略空白与注释。
-- 语法分析器：负责按递归下降方法构建 AST。
-- AST 数据结构：定义表达式、语句、函数、编译单元节点。
+角色 B 和其他角色应优先使用以下接口：
 
-## 3. 词法分析器设计
+- `Lexer::tokenize()`：返回 token 序列
+- `Parser::parse()`：返回 `std::unique_ptr<CompUnit>`
+- `dumpAst(const std::unique_ptr<CompUnit>& unit)`：输出可读的 AST 结构，便于调试
 
-### 3.1 目标职责
+## 3. 词法分析器能力说明
 
-词法分析器从源代码中识别出以下类型的 token：
+### 3.1 已支持的 token 类型
 
 - 关键字：`int`、`void`、`const`、`if`、`else`、`while`、`break`、`continue`、`return`
 - 标识符：`ID`
@@ -36,89 +45,113 @@
 - 分隔符：`( ) { } ; , =`
 - 文件结束：`END`
 
-### 3.2 设计特点
+### 3.2 处理规则
 
-- 采用单次扫描的方式完成 token 化。
-- 空白字符与注释会被直接跳过。
-- 每个 token 记录位置信息，方便后续调试与报错。
+- 空白字符会被忽略
+- 单行注释 `// ...` 和多行注释 `/* ... */` 会被跳过
+- 出现非法字符或未闭合注释时，会抛出异常，便于上层处理
+- 每个 token 会记录行号和列号，便于报错定位
 
-### 3.3 现状与建议
+## 4. 语法分析器能力说明
 
-当前实现已具备基础词法扫描能力，后续建议继续补齐：
+### 4.1 已支持的语法结构
 
-- 对非法字符的显式报错；
-- 对行号和列号的更严格维护；
-- 对注释边界情况的回归测试。
+当前解析器已能处理以下内容：
 
-## 4. 语法分析器设计
+- 全局声明和函数定义的混合编译单元
+- 函数定义，包括返回类型、函数名、形参和函数体
+- 语句块、空语句、表达式语句、赋值语句
+- 变量声明和常量声明
+- `if / else`、`while`、`break`、`continue`、`return`
+- 表达式的优先级与结合性：逻辑或、逻辑与、关系运算、加减、乘除、单目运算、括号表达式、函数调用
 
-### 4.1 解析策略
+### 4.2 语法约定
 
-采用递归下降解析器，按 ToyC 文法分层解析：
+- 变量和常量声明要求带初始化表达式
+- 语句块通过 `{ ... }` 表示
+- 赋值语句使用 `=`
+- `return` 语句支持有无返回表达式两种形式
 
-- `CompUnit`：编译单元
-- `Decl` / `ConstDecl` / `VarDecl`
-- `FuncDef`
-- `Stmt`：块、空语句、表达式语句、赋值、声明、if/while、break/continue/return
-- `Expr`：按优先级解析为逻辑或、逻辑与、关系、加减、乘除、一元、基本表达式
+## 5. AST 结构与契约
 
-### 4.2 AST 结构设计
+角色 B 及后续模块应直接基于 AST 进行消费。AST 的核心结构定义见 [src/ast.h](../src/ast.h)。
 
-AST 的核心节点如下：
+### 5.1 根节点
 
-- `Expr`：表示表达式，包含字面量、标识符、单目运算、二元运算、函数调用等。
-- `Stmt`：表示语句，包含块、空语句、表达式语句、赋值、声明、if/while、break/continue/return。
-- `FuncDef`：表示函数定义，包括返回类型、函数名、形参和函数体。
-- `CompUnit`：表示整个源文件，包含全局声明和函数定义。
+- `CompUnit`
+  - `decls`：全局变量/常量声明
+  - `funcDefs`：函数定义
 
-### 4.3 现状与建议
+### 5.2 语句节点
 
-当前解析器已经搭建了主体框架，建议继续收紧以下点：
+- `StmtKind::BLOCK`：语句块
+- `StmtKind::EMPTY`：空语句
+- `StmtKind::EXPR`：表达式语句
+- `StmtKind::ASSIGN`：赋值语句
+- `StmtKind::DECL`：普通变量声明
+- `StmtKind::CONST_DECL`：常量声明
+- `StmtKind::IF`：条件语句
+- `StmtKind::WHILE`：循环语句
+- `StmtKind::BREAK`：break
+- `StmtKind::CONTINUE`：continue
+- `StmtKind::RETURN`：return
 
-- 统一处理声明语句与表达式语句的上下文判断；
-- 保证块级作用域内的语句序列解析稳定；
-- 规范错误恢复逻辑，避免单个语法错误导致整个解析中断。
+### 5.3 表达式节点
 
-## 5. 与角色 B 的接口契约
+- `ExprKind::INT_LITERAL`：整数常量
+- `ExprKind::IDENTIFIER`：标识符
+- `ExprKind::UNARY`：一元表达式
+- `ExprKind::BINARY`：二元表达式
+- `ExprKind::FUNC_CALL`：函数调用
 
-角色 A 的输出必须满足角色 B 的直接消费要求：
+## 6. 其他角色如何使用角色 A 的输出
 
-- `CompUnit` 作为根节点；
-- `FuncDef` 中保存函数体；
-- `Stmt` 的不同子类型必须清晰区分；
-- `Expr` 必须保留足够信息用于后续语义分析和 IR 生成。
+### 6.1 推荐调用方式
 
-### 5.1 关键约定
+其他角色可以按下面方式接入前端：
 
-- `StmtKind::DECL` 表示普通变量声明；
-- `StmtKind::CONST_DECL` 表示常量声明；
-- `StmtKind::RETURN` 表示返回语句；
-- `ExprKind::BINARY` 表示二元表达式；
-- `ExprKind::FUNC_CALL` 表示函数调用。
+```cpp
+#include "lexer.h"
+#include "parser.h"
 
-## 6. 测试设计
+std::string source = R"(int main() { return 0; })";
+Lexer lexer(source);
+auto tokens = lexer.tokenize();
+Parser parser(tokens);
+auto ast = parser.parse();
+```
 
-### 6.1 词法分析测试
+### 6.2 调试 AST
 
-- 基本关键字与标识符识别；
-- 注释和空白的过滤；
-- 比较运算符与逻辑运算符的识别；
-- 负数字面量识别。
+如果需要查看生成的树结构，可调用：
 
-### 6.2 语法分析测试
+```cpp
+std::string dump = dumpAst(ast);
+std::cout << dump;
+```
 
-- 简单函数解析；
-- 表达式优先级解析；
-- if/else 与 while 解析；
-- 嵌套块与多条语句解析；
-- 全局声明与函数定义混合解析。
+这对于语义分析模块和后续联调非常有帮助。
 
-## 7. 实施建议
+## 7. 约束与注意事项
 
-1. 先把词法分析器的边界情况和测试补齐。
-2. 再将语法分析器的覆盖范围扩展到完整 ToyC 语法子集。
-3. 最后增加 AST 打印和调试工具，方便与角色 B 联调。
+- 当前实现面向 ToyC 的核心子集，适合课程实验和模块联调
+- 未实现数组、指针、复杂类型系统等高级特性
+- 解析器目前更偏“能构造正确 AST 的稳定前端”，而不是面向极其健壮的错误恢复
+- 语义分析阶段仍需依赖 AST 进行类型检查、作用域检查和 IR 生成
 
-## 8. 预期结果
+## 8. 自测与验证
 
-完成该设计后，角色 A 将能够稳定输出可供后续阶段使用的 AST，为编译器前端闭环奠定可靠基础。
+可直接使用以下方式进行验证：
+
+```bash
+cl /nologo /EHsc /std:c++20 /I src tests\test_lexer.cpp src\lexer.cpp /Fe:build\test_lexer.exe
+cl /nologo /EHsc /std:c++20 /I src tests\test_parser.cpp src\lexer.cpp src\parser.cpp /Fe:build\test_parser.exe
+build\test_lexer.exe
+build\test_parser.exe
+```
+
+## 9. 对后续角色的建议
+
+- 角色 B 在做语义分析时，应优先遍历 `CompUnit::funcDefs` 和 `CompUnit::decls`
+- 需要关注 `StmtKind` 和 `ExprKind` 的区分，避免把不同语句类型混淆
+- 若发现解析结果不符合预期，可先用 `dumpAst` 检查 AST，再继续排查语义或 IR 生成问题

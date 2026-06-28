@@ -1,5 +1,6 @@
 #include "parser.h"
 #include <iostream>
+#include <sstream>
 
 Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), pos(0) {}
 
@@ -20,6 +21,120 @@ const Token& Parser::expect(TokenType type) {
 const Token& Parser::previous() const { return tokens[pos - 1]; }
 
 std::unique_ptr<CompUnit> Parser::parse() { return parseCompUnit(); }
+
+namespace {
+std::string dumpExpr(const std::unique_ptr<Expr>& expr, int depth = 0) {
+    if (!expr) return std::string(depth, ' ') + "<null>";
+    std::ostringstream oss;
+    oss << std::string(depth, ' ');
+    switch (expr->kind) {
+        case ExprKind::INT_LITERAL:
+            oss << "IntLiteral(" << expr->intValue << ")";
+            break;
+        case ExprKind::IDENTIFIER:
+            oss << "Identifier(" << expr->name << ")";
+            break;
+        case ExprKind::UNARY:
+            oss << "Unary(";
+            switch (expr->unaryOp) {
+                case UnaryOp::PLUS: oss << "+"; break;
+                case UnaryOp::MINUS: oss << "-"; break;
+                case UnaryOp::NOT: oss << "!"; break;
+            }
+            oss << ")\n" << dumpExpr(expr->operand, depth + 2);
+            break;
+        case ExprKind::BINARY:
+            oss << "Binary(";
+            switch (expr->binaryOp) {
+                case BinaryOp::ADD: oss << "+"; break;
+                case BinaryOp::SUB: oss << "-"; break;
+                case BinaryOp::MUL: oss << "*"; break;
+                case BinaryOp::DIV: oss << "/"; break;
+                case BinaryOp::MOD: oss << "%"; break;
+                case BinaryOp::LT: oss << "<"; break;
+                case BinaryOp::GT: oss << ">"; break;
+                case BinaryOp::LE: oss << "<="; break;
+                case BinaryOp::GE: oss << ">="; break;
+                case BinaryOp::EQ: oss << "=="; break;
+                case BinaryOp::NE: oss << "!="; break;
+                case BinaryOp::AND: oss << "&&"; break;
+                case BinaryOp::OR: oss << "||"; break;
+            }
+            oss << ")\n" << dumpExpr(expr->lhs, depth + 2) << "\n" << dumpExpr(expr->rhs, depth + 2);
+            break;
+        case ExprKind::FUNC_CALL:
+            oss << "FuncCall(" << expr->name << ")";
+            break;
+    }
+    return oss.str();
+}
+
+std::string dumpStmt(const std::unique_ptr<Stmt>& stmt, int depth = 0) {
+    if (!stmt) return std::string(depth, ' ') + "<null>";
+    std::ostringstream oss;
+    oss << std::string(depth, ' ');
+    switch (stmt->kind) {
+        case StmtKind::BLOCK:
+            oss << "Block\n";
+            for (const auto& child : stmt->stmts) {
+                oss << dumpStmt(child, depth + 2) << "\n";
+            }
+            break;
+        case StmtKind::EMPTY:
+            oss << "Empty";
+            break;
+        case StmtKind::EXPR:
+            oss << "ExprStmt\n" << dumpExpr(stmt->expr, depth + 2);
+            break;
+        case StmtKind::ASSIGN:
+            oss << "Assign(" << stmt->varName << ")\n" << dumpExpr(stmt->expr, depth + 2);
+            break;
+        case StmtKind::DECL:
+            oss << "Decl(" << stmt->varName << ")\n" << dumpExpr(stmt->init, depth + 2);
+            break;
+        case StmtKind::CONST_DECL:
+            oss << "ConstDecl(" << stmt->varName << ")\n" << dumpExpr(stmt->init, depth + 2);
+            break;
+        case StmtKind::IF:
+            oss << "If\n" << dumpExpr(stmt->cond, depth + 2) << "\n" << dumpStmt(stmt->thenStmt, depth + 2);
+            if (stmt->elseStmt) {
+                oss << "\n" << dumpStmt(stmt->elseStmt, depth + 2);
+            }
+            break;
+        case StmtKind::WHILE:
+            oss << "While\n" << dumpExpr(stmt->cond, depth + 2) << "\n" << dumpStmt(stmt->body, depth + 2);
+            break;
+        case StmtKind::BREAK:
+            oss << "Break";
+            break;
+        case StmtKind::CONTINUE:
+            oss << "Continue";
+            break;
+        case StmtKind::RETURN:
+            oss << "Return";
+            if (stmt->retExpr) {
+                oss << "\n" << dumpExpr(stmt->retExpr, depth + 2);
+            }
+            break;
+    }
+    return oss.str();
+}
+}
+
+std::string dumpAst(const std::unique_ptr<CompUnit>& unit) {
+    std::ostringstream oss;
+    oss << "CompUnit\n";
+    for (const auto& decl : unit->decls) {
+        oss << dumpStmt(decl, 2) << "\n";
+    }
+    for (const auto& func : unit->funcDefs) {
+        oss << "FuncDef(" << func->name << ")\n";
+        if (func->body) {
+            oss << dumpStmt(func->body, 2) << "\n";
+        }
+    }
+    return oss.str();
+}
 
 std::unique_ptr<CompUnit> Parser::parseCompUnit() {
     auto unit = std::make_unique<CompUnit>();
