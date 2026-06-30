@@ -65,6 +65,42 @@ int main() {
     std::string asm5 = compile(src1, true);
     std::cout << "Integration Test 5 PASS: return 42 with -opt\n";
 
+    // Test 6: functions + globals + consts
+    std::string src6 = R"(
+        const int base = 3;
+        int g = 4;
+        int add(int a, int b) {
+            return a + b;
+        }
+        int main() {
+            int x = add(base, g);
+            return x * 2;
+        }
+    )";
+    std::string asm6 = compile(src6, true);
+    assert(!asm6.empty());
+    assert(asm6.find(".data") != std::string::npos);
+    assert(asm6.find("add:") != std::string::npos);
+    std::cout << "Integration Test 6 PASS: functions/globals with -opt\n";
+
+    // Test 7: short-circuit logic should survive optimization
+    std::string src7 = R"(
+        int main() {
+            int a = 0;
+            int b = 5;
+            if ((a != 0) && (10 / a > 1)) {
+                return 1;
+            }
+            if ((b > 0) || (10 / a > 1)) {
+                return 7;
+            }
+            return 0;
+        }
+    )";
+    std::string asm7 = compile(src7, true);
+    assert(!asm7.empty());
+    std::cout << "Integration Test 7 PASS: short-circuit logic with -opt\n";
+
     // Print a sample
     std::cout << "\n=== Sample assembly output ===\n" << asm1 << "===\n";
 

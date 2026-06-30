@@ -1,52 +1,162 @@
 #include "optimizer.h"
-#include <unordered_set>
 #include <unordered_map>
+#include <optional>
+#include <utility>
 
 IRList Optimizer::optimize(const IRList& ir) {
     IRList result = constantFolding(ir);
-    result = deadCodeElimination(result);
+    while (true) {
+        IRList next = deadCodeElimination(result);
+        if (next.size() == result.size()) {
+            result = std::move(next);
+            break;
+        }
+        result = std::move(next);
+    }
     return result;
 }
+
+namespace {
+
+bool isTemp(const std::string& name) {
+    return !name.empty() && name[0] == '%';
+}
+
+bool hasControlFlowBoundary(IROp op) {
+    switch (op) {
+        case IROp::FUNC_BEGIN:
+        case IROp::FUNC_END:
+        case IROp::LABEL:
+        case IROp::GOTO:
+        case IROp::IF_GOTO:
+        case IROp::CALL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool hasSideEffect(IROp op) {
+    switch (op) {
+        case IROp::STORE:
+        case IROp::CALL:
+        case IROp::RETURN:
+        case IROp::GOTO:
+        case IROp::IF_GOTO:
+        case IROp::LABEL:
+        case IROp::FUNC_BEGIN:
+        case IROp::FUNC_END:
+        case IROp::DECL:
+        case IROp::ARG:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isBinaryOp(IROp op) {
+    switch (op) {
+        case IROp::ADD: case IROp::SUB: case IROp::MUL:
+        case IROp::DIV: case IROp::MOD:
+        case IROp::LT:  case IROp::GT:  case IROp::LE:
+        case IROp::GE:  case IROp::EQ:  case IROp::NE:
+        case IROp::AND: case IROp::OR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::optional<int> foldBinary(IROp op, int lhs, int rhs) {
+    switch (op) {
+        case IROp::ADD: return lhs + rhs;
+        case IROp::SUB: return lhs - rhs;
+        case IROp::MUL: return lhs * rhs;
+        case IROp::DIV:
+            if (rhs == 0) return std::nullopt;
+            return lhs / rhs;
+        case IROp::MOD:
+            if (rhs == 0) return std::nullopt;
+            return lhs % rhs;
+        case IROp::LT:  return lhs <  rhs ? 1 : 0;
+        case IROp::GT:  return lhs >  rhs ? 1 : 0;
+        case IROp::LE:  return lhs <= rhs ? 1 : 0;
+        case IROp::GE:  return lhs >= rhs ? 1 : 0;
+        case IROp::EQ:  return lhs == rhs ? 1 : 0;
+        case IROp::NE:  return lhs != rhs ? 1 : 0;
+        case IROp::AND: return (lhs != 0 && rhs != 0) ? 1 : 0;
+        case IROp::OR:  return (lhs != 0 || rhs != 0) ? 1 : 0;
+        default:        return std::nullopt;
+    }
+}
+
+std::optional<int> foldUnary(IROp op, int value) {
+    switch (op) {
+        case IROp::NEG: return -value;
+        case IROp::NOT: return value == 0 ? 1 : 0;
+        default:        return std::nullopt;
+    }
+}
+
+} // namespace
 
 IRList Optimizer::constantFolding(const IRList& ir) {
     IRList result;
     std::unordered_map<std::string, int> constValues;
 
-    auto isConst = [&](const std::string& name) -> bool {
-        return constValues.find(name) != constValues.end();
+    auto getConst = [&](const std::string& name) -> std::optional<int> {
+        auto it = constValues.find(name);
+        if (it == constValues.end()) return std::nullopt;
+        return it->second;
     };
 
     for (const auto& instr : ir) {
+        if (hasControlFlowBoundary(instr.op)) {
+            constValues.clear();
+            result.push_back(instr);
+            continue;
+        }
+
         if (instr.op == IROp::LOAD_IMM) {
             constValues[instr.dst] = instr.intValue;
             result.push_back(instr);
-        } else if (instr.op == IROp::ADD || instr.op == IROp::SUB ||
-                   instr.op == IROp::MUL || instr.op == IROp::DIV ||
-                   instr.op == IROp::MOD) {
-            bool lConst = isConst(instr.src1);
-            bool rConst = isConst(instr.src2);
-            if (lConst && rConst) {
-                int lv = constValues[instr.src1];
-                int rv = constValues[instr.src2];
-                int res = 0;
-                switch (instr.op) {
-                    case IROp::ADD: res = lv + rv; break;
-                    case IROp::SUB: res = lv - rv; break;
-                    case IROp::MUL: res = lv * rv; break;
-                    case IROp::DIV: res = lv / rv; break;
-                    case IROp::MOD: res = lv % rv; break;
+        } else if (isBinaryOp(instr.op)) {
+            auto lhs = getConst(instr.src1);
+            auto rhs = getConst(instr.src2);
+            if (lhs && rhs) {
+                auto folded = foldBinary(instr.op, *lhs, *rhs);
+                if (folded) {
+                    constValues[instr.dst] = *folded;
+                    result.push_back(IRInstr::li(instr.dst, *folded));
+                } else {
+                    constValues.erase(instr.dst);
+                    result.push_back(instr);
                 }
-                constValues[instr.dst] = res;
-                result.push_back(IRInstr::li(instr.dst, res));
             } else {
+                constValues.erase(instr.dst);
+                result.push_back(instr);
+            }
+        } else if (instr.op == IROp::NEG || instr.op == IROp::NOT) {
+            auto value = getConst(instr.src1);
+            if (value) {
+                auto folded = foldUnary(instr.op, *value);
+                constValues[instr.dst] = *folded;
+                result.push_back(IRInstr::li(instr.dst, *folded));
+            } else {
+                constValues.erase(instr.dst);
                 result.push_back(instr);
             }
         } else if (instr.op == IROp::ASSIGN) {
-            if (isConst(instr.src1)) {
-                constValues[instr.dst] = constValues[instr.src1];
+            auto value = getConst(instr.src1);
+            if (value) {
+                constValues[instr.dst] = *value;
+                result.push_back(IRInstr::li(instr.dst, *value));
+            } else {
+                constValues.erase(instr.dst);
+                result.push_back(instr);
             }
-            result.push_back(instr);
         } else {
+            if (!instr.dst.empty()) constValues.erase(instr.dst);
             result.push_back(instr);
         }
     }
@@ -58,9 +168,9 @@ IRList Optimizer::deadCodeElimination(const IRList& ir) {
     // Count uses of each temporary variable
     std::unordered_map<std::string, int> useCount;
     for (const auto& instr : ir) {
-        if (!instr.src1.empty() && instr.src1[0] == '%')
+        if (isTemp(instr.src1))
             useCount[instr.src1]++;
-        if (!instr.src2.empty() && instr.src2[0] == '%')
+        if (isTemp(instr.src2))
             useCount[instr.src2]++;
     }
 
@@ -68,20 +178,9 @@ IRList Optimizer::deadCodeElimination(const IRList& ir) {
     for (const auto& instr : ir) {
         // If dst is a temp with 0 uses, skip this instruction
         bool isDead = false;
-        if (!instr.dst.empty() && instr.dst[0] == '%') {
+        if (isTemp(instr.dst)) {
             if (useCount[instr.dst] == 0) {
-                // Skip instructions whose result is never used
-                // (except for control flow / store / call / return)
-                switch (instr.op) {
-                    case IROp::STORE: case IROp::CALL: case IROp::RETURN:
-                    case IROp::GOTO: case IROp::IF_GOTO: case IROp::LABEL:
-                    case IROp::FUNC_BEGIN: case IROp::FUNC_END:
-                        isDead = false;
-                        break;
-                    default:
-                        isDead = true;
-                        break;
-                }
+                isDead = !hasSideEffect(instr.op);
             }
         }
         if (!isDead) {

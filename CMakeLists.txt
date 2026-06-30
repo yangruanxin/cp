@@ -4,9 +4,8 @@ project(ToyC-Compiler LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 所有源文件
-set(COMPILER_SOURCES
-    src/main.cpp
+# 编译器核心源码（不包含 main，便于测试复用）
+set(COMPILER_LIB_SOURCES
     src/lexer.cpp
     src/parser.cpp
     src/symbol_table.cpp
@@ -17,7 +16,7 @@ set(COMPILER_SOURCES
 )
 
 # 主编译器
-add_executable(compiler ${COMPILER_SOURCES})
+add_executable(compiler src/main.cpp ${COMPILER_LIB_SOURCES})
 target_include_directories(compiler PRIVATE src)
 
 # A 的自测
@@ -44,5 +43,5 @@ add_executable(test_optimizer tests/test_optimizer.cpp src/optimizer.cpp)
 target_include_directories(test_optimizer PRIVATE src)
 
 # D 的集成测试
-add_executable(test_integration tests/test_integration.cpp ${COMPILER_SOURCES})
+add_executable(test_integration tests/test_integration.cpp ${COMPILER_LIB_SOURCES})
 target_include_directories(test_integration PRIVATE src)
