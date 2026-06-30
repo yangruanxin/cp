@@ -1,0 +1,11 @@
+const int base = 3;
+int g = 4;
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int main() {
+    int x = add(base, g);
+    return x * 2;
+}
