@@ -9,6 +9,7 @@ IRList Optimizer::optimize(const IRList& ir) {
     for (int i = 0; i < 6; i++) {
         IRList next = copyPropagation(result);
         next = constantFolding(next);
+        next = simplifyJumps(next);
         while (true) {
             IRList dce = deadCodeElimination(next);
             if (dce.size() == next.size()) {
@@ -22,6 +23,25 @@ IRList Optimizer::optimize(const IRList& ir) {
             break;
         }
         result = std::move(next);
+    }
+    return result;
+}
+
+IRList Optimizer::simplifyJumps(const IRList& ir) {
+    IRList result;
+    for (size_t i = 0; i < ir.size(); i++) {
+        const auto& instr = ir[i];
+        bool skip = false;
+        if (instr.op == IROp::GOTO) {
+            size_t j = i + 1;
+            while (j < ir.size() && ir[j].op == IROp::LABEL) {
+                if (ir[j].label == instr.label) {
+                    skip = true;
+                }
+                break;
+            }
+        }
+        if (!skip) result.push_back(instr);
     }
     return result;
 }

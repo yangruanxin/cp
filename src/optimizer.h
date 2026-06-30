@@ -11,6 +11,7 @@ public:
 private:
     IRList copyPropagation(const IRList& ir);
     IRList constantFolding(const IRList& ir);
+    IRList simplifyJumps(const IRList& ir);
     IRList deadCodeElimination(const IRList& ir);
 };
 

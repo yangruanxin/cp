@@ -212,11 +212,12 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
         }
         case StmtKind::IF: {
             std::string cond = visitExpr(stmt->cond);
-            std::string notCond = newTemp();
+            std::string thenLabel = newLabel();
             std::string elseLabel = newLabel();
             std::string endLabel = newLabel();
-            ir.push_back(IRInstr::una(IROp::NOT, notCond, cond));
-            ir.push_back(IRInstr::ifGoto(notCond, elseLabel));
+            ir.push_back(IRInstr::ifGoto(cond, thenLabel));
+            ir.push_back(IRInstr::goto_(elseLabel));
+            ir.push_back(IRInstr::labelInstr(thenLabel));
             bool thenReturns = visitStmt(stmt->thenStmt);
             ir.push_back(IRInstr::goto_(endLabel));
             ir.push_back(IRInstr::labelInstr(elseLabel));
@@ -229,6 +230,7 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
         }
         case StmtKind::WHILE: {
             std::string beginLabel = newLabel();
+            std::string bodyLabel = newLabel();
             std::string endLabel = newLabel();
             bool outerLoop = inLoop;
             std::string outerBegin = loopBeginLabel;
@@ -239,9 +241,9 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
 
             ir.push_back(IRInstr::labelInstr(beginLabel));
             std::string cond = visitExpr(stmt->cond);
-            std::string notCond = newTemp();
-            ir.push_back(IRInstr::una(IROp::NOT, notCond, cond));
-            ir.push_back(IRInstr::ifGoto(notCond, endLabel));
+            ir.push_back(IRInstr::ifGoto(cond, bodyLabel));
+            ir.push_back(IRInstr::goto_(endLabel));
+            ir.push_back(IRInstr::labelInstr(bodyLabel));
             visitStmt(stmt->body);
             ir.push_back(IRInstr::goto_(beginLabel));
             ir.push_back(IRInstr::labelInstr(endLabel));
