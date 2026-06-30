@@ -1,5 +1,6 @@
 #include "codegen.h"
 #include <algorithm>
+#include <unordered_map>
 
 // ------------------------------------------------------------
 // 工具
@@ -58,6 +59,7 @@ bool CodeGenerator::isAReg(const std::string& op) const {
 
 CodeGenerator::Kind CodeGenerator::classify(const std::string& op) const {
     if (op.empty()) return Kind::ZERO;
+    if (regOf.count(op)) return Kind::SREG;                // 函数内缓存寄存器
     if (op[0] == '%') return Kind::SLOT;                 // 临时量
     if (globals.count(op)) return Kind::GLOBAL;          // 全局变量/常量
     if (slotOff.count(op)) return Kind::SLOT;            // 已分配槽的局部/形参
@@ -88,6 +90,13 @@ void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
         case Kind::AREG:
             if (op != target) emit("    mv " + target + ", " + op);
             break;
+        case Kind::SREG: {
+            auto it = regOf.find(op);
+            if (it != regOf.end() && it->second != target) {
+                emit("    mv " + target + ", " + it->second);
+            }
+            break;
+        }
         case Kind::UNKNOWN:
             // 兜底：当作 0，保证可汇编。
             emit("    li " + target + ", 0");
@@ -113,6 +122,13 @@ void CodeGenerator::storeFromReg(const std::string& reg, const std::string& op,
         case Kind::AREG:
             if (op != reg) emit("    mv " + op + ", " + reg);
             break;
+        case Kind::SREG: {
+            auto it = regOf.find(op);
+            if (it != regOf.end() && it->second != reg) {
+                emit("    mv " + it->second + ", " + reg);
+            }
+            break;
+        }
         case Kind::UNKNOWN:
             break;
     }
@@ -156,6 +172,9 @@ void CodeGenerator::collectParams(const IRList& ir, size_t begin, size_t end) {
 // ------------------------------------------------------------
 void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     slotOff.clear();
+    regOf.clear();
+    usedSRegs.clear();
+    sRegOff.clear();
     declaredLocals.clear();
     pendingArgs.clear();
 
@@ -170,30 +189,55 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
         }
     }
 
-    std::vector<std::string> order;  // 保持确定性的槽分配顺序
-    auto want = [&](const std::string& op) {
-        if (op.empty()) return;
-        if (op[0] == '%') {                       // 临时量
-            if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
-            return;
-        }
-        if (globals.count(op)) return;            // 全局：不占栈
-        if (declaredLocals.count(op)) {           // 局部/形参
-            if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
-            return;
-        }
-        // a0..a7 伪寄存器与未知名（如返回值 a0）不占栈。
+    std::unordered_map<std::string, int> freq;
+    std::vector<std::string> firstSeen;
+    auto candidate = [&](const std::string& op) {
+        if (op.empty() || isAReg(op) || globals.count(op)) return false;
+        return op[0] == '%' || declaredLocals.count(op);
+    };
+    auto countUse = [&](const std::string& op) {
+        if (!candidate(op)) return;
+        if (freq[op]++ == 0) firstSeen.push_back(op);
     };
 
     int maxArgCount = 0;  // 出参个数上界（用于 >8 实参的栈传递）
     for (size_t i = begin + 1; i < end; i++) {
         const auto& in = ir[i];
-        want(in.dst);
-        want(in.src1);
-        want(in.src2);
+        countUse(in.dst);
+        countUse(in.src1);
+        countUse(in.src2);
         if (in.op == IROp::ARG) {
             maxArgCount = std::max(maxArgCount, in.intValue + 1);
         }
+    }
+
+    std::vector<std::string> ranked = firstSeen;
+    std::stable_sort(ranked.begin(), ranked.end(), [&](const std::string& a, const std::string& b) {
+        return freq[a] > freq[b];
+    });
+
+    static const char* kSRegs[] = {"s1", "s2", "s3", "s4", "s5", "s6",
+                                   "s7", "s8", "s9", "s10", "s11"};
+    int regCount = 0;
+    for (const auto& name : ranked) {
+        if (regCount >= 11) break;
+        if (freq[name] <= 2) continue;
+        regOf[name] = kSRegs[regCount++];
+        usedSRegs.push_back(regOf[name]);
+    }
+
+    std::vector<std::string> order;  // 保持确定性的槽分配顺序
+    auto wantSlot = [&](const std::string& op) {
+        if (!candidate(op) || regOf.count(op)) return;
+        if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
+        // a0..a7 伪寄存器与未知名（如返回值 a0）不占栈。
+    };
+
+    for (size_t i = begin + 1; i < end; i++) {
+        const auto& in = ir[i];
+        wantSlot(in.dst);
+        wantSlot(in.src1);
+        wantSlot(in.src2);
     }
 
     outArgBytes = (maxArgCount > 8) ? (maxArgCount - 8) * 4 : 0;
@@ -205,7 +249,11 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     }
     int numSlots = (int)order.size();
     raOff = outArgBytes + numSlots * 4;
-    frameSize = align16(raOff + 4);  // +4 给 ra
+    int saveBase = raOff + 4;
+    for (size_t i = 0; i < usedSRegs.size(); i++) {
+        sRegOff[usedSRegs[i]] = saveBase + (int)i * 4;
+    }
+    frameSize = align16(saveBase + (int)usedSRegs.size() * 4);
 }
 
 // ------------------------------------------------------------
@@ -336,15 +384,17 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
     // ---- prologue ----
     emitAdjustSp(-frameSize, "t0");
     emitStoreStack("ra", raOff, "t0");
+    for (const auto& s : usedSRegs) {
+        emitStoreStack(s, sRegOff[s], "t0");
+    }
     for (size_t i = 0; i < params.size(); i++) {
-        int off = slotOff[params[i]];
         if (i < 8) {
-            emitStoreStack("a" + std::to_string(i), off, "t0");
+            storeFromReg("a" + std::to_string(i), params[i], "t0");
         } else {
             // 第 9 个及以后的入参在调用者栈帧：本帧建立后位于 sp+frameSize+...
             int inOff = frameSize + (int)(i - 8) * 4;
             emitLoadStack("t0", inOff, "t1");
-            emitStoreStack("t0", off, "t1");
+            storeFromReg("t0", params[i], "t1");
         }
     }
 
@@ -356,6 +406,9 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
 
     // ---- epilogue ----
     emit(epiLabel + ":");
+    for (auto it = usedSRegs.rbegin(); it != usedSRegs.rend(); ++it) {
+        emitLoadStack(*it, sRegOff[*it], "t0");
+    }
     emitLoadStack("ra", raOff, "t0");
     emitAdjustSp(frameSize, "t0");
     emit("    ret");

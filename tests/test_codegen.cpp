@@ -102,9 +102,9 @@ int main() {
         };
         CodeGenerator cg;
         std::string s = cg.generate(ir);
-        // 形参 a/b 在 prologue 从 a0/a1 写回栈槽
-        assert(has(s, "sw a0,"));
-        assert(has(s, "sw a1,"));
+        // 形参 a/b 在 prologue 从 a0/a1 写入栈槽或缓存到 s 寄存器
+        assert(has(s, "sw a0,") || has(s, "mv s"));
+        assert(has(s, "sw a1,") || has(s, "mv s"));
         assert(has(s, "call add"));
         // 调用结果从 a0 写回临时槽
         std::cout << "Test 4 PASS: params + call\n";

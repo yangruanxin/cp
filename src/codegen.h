@@ -37,6 +37,9 @@ private:
 
     // ---- 当前函数状态 ----
     std::unordered_map<std::string, int> slotOff;  // 名字 -> sp 相对偏移
+    std::unordered_map<std::string, std::string> regOf; // 名字 -> s 寄存器
+    std::vector<std::string> usedSRegs;            // 当前函数使用的 s 寄存器
+    std::unordered_map<std::string, int> sRegOff;  // s 寄存器保存槽
     std::vector<std::string> params;               // 形参，按 a0,a1,... 顺序
     std::unordered_set<std::string> declaredLocals;// 局部变量 + 形参名
     std::vector<std::pair<std::string, int>> pendingArgs; // 待传递实参 (操作数, 序号)
@@ -45,7 +48,7 @@ private:
     int outArgBytes = 0;
     std::string epiLabel;
 
-    enum class Kind { ZERO, SLOT, GLOBAL, AREG, UNKNOWN };
+    enum class Kind { ZERO, SLOT, GLOBAL, AREG, SREG, UNKNOWN };
 
     void emit(const std::string& s);
     void emitAdjustSp(int amount, const std::string& scratch);
