@@ -81,8 +81,8 @@ int main() {
     {
         IRList ir = {
             IRInstr::funcBegin("add"),
-            IRInstr::decl("a", false, 0),     // 形参（其后无同名 ASSIGN）
-            IRInstr::decl("b", false, 0),     // 形参
+            IRInstr::param("a"),
+            IRInstr::param("b"),
             IRInstr::load("%t0", "a", 0),
             IRInstr::load("%t1", "b", 0),
             IRInstr::bin(IROp::ADD, "%t2", "%t0", "%t1"),

@@ -9,6 +9,7 @@ public:
     IRList optimize(const IRList& ir);
 
 private:
+    IRList copyPropagation(const IRList& ir);
     IRList constantFolding(const IRList& ir);
     IRList deadCodeElimination(const IRList& ir);
 };

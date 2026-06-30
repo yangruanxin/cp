@@ -22,6 +22,7 @@ private:
     IRList ir;
     int labelCounter;
     int tempCounter;
+    int localCounter;
     bool inLoop;
     FuncType currentFuncReturnType;
     bool hasReturn;
@@ -33,8 +34,8 @@ private:
     std::string newTemp();
     void error(const std::string& message);
     ConstEvalResult evalConstExpr(const std::unique_ptr<Expr>& expr);
-    void defineVariable(const std::string& name, bool isConst, bool isGlobal,
-                        int value = 0, bool valueKnown = false);
+    std::string defineVariable(const std::string& name, bool isConst, bool isGlobal,
+                               int value = 0, bool valueKnown = false);
     std::string makeBool(const std::string& value);
 
     void visitCompUnit(const std::unique_ptr<CompUnit>& unit);

@@ -12,13 +12,15 @@ void SymbolTable::exitScope() {
     if (scopes.size() > 1) scopes.pop_back();
 }
 
-bool SymbolTable::addVariable(const std::string& name, bool isConst,
-                               bool isGlobal, int value, bool valueKnown) {
+bool SymbolTable::addVariable(const std::string& name, const std::string& irName,
+                               bool isConst, bool isGlobal, int value,
+                               bool valueKnown) {
     if (lookupCurrentScope(name)) {
         return false;
     }
     Symbol sym;
     sym.name = name;
+    sym.irName = irName;
     sym.isConst = isConst;
     sym.isGlobal = isGlobal;
     sym.value = value;
@@ -35,6 +37,7 @@ bool SymbolTable::addFunction(const std::string& name, FuncType returnType,
     }
     Symbol sym;
     sym.name = name;
+    sym.irName = name;
     sym.isConst = false;
     sym.isGlobal = true;
     sym.valueKnown = false;

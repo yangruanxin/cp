@@ -13,6 +13,45 @@ static int align16(int n) {
     return (n + 15) / 16 * 16;
 }
 
+static bool fitsI12(int n) {
+    return n >= -2048 && n <= 2047;
+}
+
+void CodeGenerator::emitAdjustSp(int amount, const std::string& scratch) {
+    if (amount == 0) return;
+    if (fitsI12(amount)) {
+        emit("    addi sp, sp, " + std::to_string(amount));
+    } else if (amount > 0) {
+        emit("    li " + scratch + ", " + std::to_string(amount));
+        emit("    add sp, sp, " + scratch);
+    } else {
+        emit("    li " + scratch + ", " + std::to_string(-amount));
+        emit("    sub sp, sp, " + scratch);
+    }
+}
+
+void CodeGenerator::emitLoadStack(const std::string& target, int offset,
+                                  const std::string& scratch) {
+    if (fitsI12(offset)) {
+        emit("    lw " + target + ", " + std::to_string(offset) + "(sp)");
+    } else {
+        emit("    li " + scratch + ", " + std::to_string(offset));
+        emit("    add " + scratch + ", sp, " + scratch);
+        emit("    lw " + target + ", 0(" + scratch + ")");
+    }
+}
+
+void CodeGenerator::emitStoreStack(const std::string& reg, int offset,
+                                   const std::string& scratch) {
+    if (fitsI12(offset)) {
+        emit("    sw " + reg + ", " + std::to_string(offset) + "(sp)");
+    } else {
+        emit("    li " + scratch + ", " + std::to_string(offset));
+        emit("    add " + scratch + ", sp, " + scratch);
+        emit("    sw " + reg + ", 0(" + scratch + ")");
+    }
+}
+
 bool CodeGenerator::isAReg(const std::string& op) const {
     return op.size() == 2 && op[0] == 'a' && op[1] >= '0' && op[1] <= '7';
 }
@@ -39,7 +78,7 @@ void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
         case Kind::SLOT: {
             auto it = slotOff.find(op);
             int off = (it != slotOff.end()) ? it->second : 0;
-            emit("    lw " + target + ", " + std::to_string(off) + "(sp)");
+            emitLoadStack(target, off, "t3");
             break;
         }
         case Kind::GLOBAL:
@@ -64,7 +103,7 @@ void CodeGenerator::storeFromReg(const std::string& reg, const std::string& op,
         case Kind::SLOT: {
             auto it = slotOff.find(op);
             int off = (it != slotOff.end()) ? it->second : 0;
-            emit("    sw " + reg + ", " + std::to_string(off) + "(sp)");
+            emitStoreStack(reg, off, scratch);
             break;
         }
         case Kind::GLOBAL:
@@ -102,20 +141,13 @@ void CodeGenerator::emitGlobals(const IRList& ir) {
 
 // ------------------------------------------------------------
 // 形参识别
-//   B 为每个形参在 FUNC_BEGIN 后紧跟发出 DECL(name,"local",0)，且不会
-//   紧跟一条写回同名变量的 ASSIGN；而每个局部声明都形如
-//   DECL(name) + ASSIGN(name,val)。据此可无歧义地区分形参。
+//   B 为每个形参发出 DECL(name,"param",0)，普通局部为 DECL(name,"local",0)。
 // ------------------------------------------------------------
 void CodeGenerator::collectParams(const IRList& ir, size_t begin, size_t end) {
     params.clear();
     for (size_t i = begin + 1; i < end; i++) {
         const auto& in = ir[i];
-        if (in.op != IROp::DECL || in.src1 != "local") continue;
-        bool followedByInit =
-            (i + 1 < end) && ir[i + 1].op == IROp::ASSIGN && ir[i + 1].dst == in.dst;
-        if (!followedByInit) {
-            params.push_back(in.dst);
-        }
+        if (in.op == IROp::DECL && in.src1 == "param") params.push_back(in.dst);
     }
 }
 
@@ -133,7 +165,7 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     // 局部变量声明名
     for (size_t i = begin + 1; i < end; i++) {
         const auto& in = ir[i];
-        if (in.op == IROp::DECL && in.src1 == "local") {
+        if (in.op == IROp::DECL && (in.src1 == "local" || in.src1 == "param")) {
             declaredLocals.insert(in.dst);
         }
     }
@@ -268,7 +300,7 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
                     loadInto(op, "a" + std::to_string(idx));
                 } else {
                     loadInto(op, "t0");
-                    emit("    sw t0, " + std::to_string((idx - 8) * 4) + "(sp)");
+                    emitStoreStack("t0", (idx - 8) * 4, "t1");
                 }
             }
             pendingArgs.clear();
@@ -302,17 +334,17 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
     emit(name + ":");
 
     // ---- prologue ----
-    emit("    addi sp, sp, -" + std::to_string(frameSize));
-    emit("    sw ra, " + std::to_string(raOff) + "(sp)");
+    emitAdjustSp(-frameSize, "t0");
+    emitStoreStack("ra", raOff, "t0");
     for (size_t i = 0; i < params.size(); i++) {
         int off = slotOff[params[i]];
         if (i < 8) {
-            emit("    sw a" + std::to_string(i) + ", " + std::to_string(off) + "(sp)");
+            emitStoreStack("a" + std::to_string(i), off, "t0");
         } else {
             // 第 9 个及以后的入参在调用者栈帧：本帧建立后位于 sp+frameSize+...
             int inOff = frameSize + (int)(i - 8) * 4;
-            emit("    lw t0, " + std::to_string(inOff) + "(sp)");
-            emit("    sw t0, " + std::to_string(off) + "(sp)");
+            emitLoadStack("t0", inOff, "t1");
+            emitStoreStack("t0", off, "t1");
         }
     }
 
@@ -324,8 +356,8 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
 
     // ---- epilogue ----
     emit(epiLabel + ":");
-    emit("    lw ra, " + std::to_string(raOff) + "(sp)");
-    emit("    addi sp, sp, " + std::to_string(frameSize));
+    emitLoadStack("ra", raOff, "t0");
+    emitAdjustSp(frameSize, "t0");
     emit("    ret");
 }
 

@@ -2,7 +2,7 @@
 #include <iostream>
 
 IRGenerator::IRGenerator()
-    : labelCounter(0), tempCounter(0), inLoop(false), hasReturn(false),
+    : labelCounter(0), tempCounter(0), localCounter(0), inLoop(false), hasReturn(false),
       hasError(false) {}
 
 std::string IRGenerator::newLabel() {
@@ -22,6 +22,7 @@ IRList IRGenerator::generate(const std::unique_ptr<CompUnit>& unit) {
     ir.clear();
     labelCounter = 0;
     tempCounter = 0;
+    localCounter = 0;
     inLoop = false;
     hasReturn = false;
     hasError = false;
@@ -83,11 +84,13 @@ ConstEvalResult IRGenerator::evalConstExpr(const std::unique_ptr<Expr>& expr) {
     return {};
 }
 
-void IRGenerator::defineVariable(const std::string& name, bool isConst, bool isGlobal,
-                                 int value, bool valueKnown) {
-    if (!symTable.addVariable(name, isConst, isGlobal, value, valueKnown)) {
+std::string IRGenerator::defineVariable(const std::string& name, bool isConst, bool isGlobal,
+                                        int value, bool valueKnown) {
+    std::string irName = isGlobal ? name : (name + "$" + std::to_string(localCounter++));
+    if (!symTable.addVariable(name, irName, isConst, isGlobal, value, valueKnown)) {
         error("redefinition of '" + name + "'");
     }
+    return irName;
 }
 
 std::string IRGenerator::makeBool(const std::string& value) {
@@ -109,7 +112,7 @@ void IRGenerator::visitCompUnit(const std::unique_ptr<CompUnit>& unit) {
             error("global variable '" + decl->varName + "' initializer must be constant in this IR backend");
         }
         int value = constValue.known ? constValue.value : 0;
-        defineVariable(decl->varName, isConst, true, value, isConst || constValue.known);
+        defineVariable(decl->varName, isConst, true, value, isConst && constValue.known);
         ir.push_back(IRInstr::decl(decl->varName, true, value));
     }
 
@@ -139,8 +142,8 @@ void IRGenerator::visitFuncDef(const std::unique_ptr<FuncDef>& func) {
 
     symTable.enterScope();
     for (const auto& p : func->params) {
-        defineVariable(p.name, false, false);
-        ir.push_back(IRInstr::decl(p.name, false, 0));
+        std::string paramName = defineVariable(p.name, false, false);
+        ir.push_back(IRInstr::param(paramName));
     }
 
     bool allPathsReturn = visitStmt(func->body);
@@ -182,7 +185,9 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
                 error("cannot assign to const '" + stmt->varName + "'");
             }
             std::string val = visitExpr(stmt->expr);
-            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            if (sym && !sym->isFunction) {
+                ir.push_back(IRInstr::store(sym->irName, 0, val));
+            }
             return false;
         }
         case StmtKind::DECL:
@@ -192,16 +197,17 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
             if (isConst && !constValue.known) {
                 error("const '" + stmt->varName + "' initializer is not a compile-time constant");
             }
-            defineVariable(stmt->varName, isConst, symTable.isGlobalScope(),
-                           constValue.known ? constValue.value : 0,
-                           isConst && constValue.known);
-            ir.push_back(IRInstr::decl(stmt->varName, symTable.isGlobalScope(),
+            bool isGlobal = symTable.isGlobalScope();
+            std::string irName = defineVariable(stmt->varName, isConst, isGlobal,
+                                                constValue.known ? constValue.value : 0,
+                                                isConst && constValue.known);
+            ir.push_back(IRInstr::decl(irName, isGlobal,
                                        constValue.known ? constValue.value : 0));
             std::string val = constValue.known ? newTemp() : visitExpr(stmt->init);
             if (constValue.known) {
                 ir.push_back(IRInstr::li(val, constValue.value));
             }
-            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            ir.push_back(IRInstr::store(irName, 0, val));
             return false;
         }
         case StmtKind::IF: {
@@ -311,7 +317,7 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr, bool allow
                 return t;
             }
             std::string t = newTemp();
-            ir.push_back(IRInstr::load(t, expr->name, 0));
+            ir.push_back(IRInstr::load(t, sym->irName, 0));
             return t;
         }
         case ExprKind::UNARY: {
@@ -398,6 +404,11 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr, bool allow
             for (size_t i = 0; i < expr->args.size(); i++) {
                 std::string argVal = visitExpr(expr->args[i]);
                 ir.push_back(IRInstr::arg(argVal, static_cast<int>(i)));
+            }
+            bool isVoidCall = sym && sym->isFunction && sym->funcType == FuncType::VOID;
+            if (isVoidCall && allowVoid) {
+                ir.push_back(IRInstr::call("", expr->name));
+                return "";
             }
             std::string t = newTemp();
             ir.push_back(IRInstr::call(t, expr->name));

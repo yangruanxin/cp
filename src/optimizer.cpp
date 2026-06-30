@@ -1,12 +1,22 @@
 #include "optimizer.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 #include <utility>
 
 IRList Optimizer::optimize(const IRList& ir) {
-    IRList result = constantFolding(ir);
-    while (true) {
-        IRList next = deadCodeElimination(result);
+    IRList result = ir;
+    for (int i = 0; i < 6; i++) {
+        IRList next = copyPropagation(result);
+        next = constantFolding(next);
+        while (true) {
+            IRList dce = deadCodeElimination(next);
+            if (dce.size() == next.size()) {
+                next = std::move(dce);
+                break;
+            }
+            next = std::move(dce);
+        }
         if (next.size() == result.size()) {
             result = std::move(next);
             break;
@@ -98,7 +108,58 @@ std::optional<int> foldUnary(IROp op, int value) {
     }
 }
 
+std::string resolveCopy(const std::unordered_map<std::string, std::string>& copies,
+                        const std::string& name) {
+    std::string cur = name;
+    for (int i = 0; i < 16; i++) {
+        auto it = copies.find(cur);
+        if (it == copies.end()) break;
+        cur = it->second;
+    }
+    return cur;
+}
+
+void eraseCopiesTo(std::unordered_map<std::string, std::string>& copies,
+                   const std::string& dst) {
+    if (dst.empty()) return;
+    copies.erase(dst);
+    for (auto it = copies.begin(); it != copies.end(); ) {
+        if (it->second == dst) it = copies.erase(it);
+        else ++it;
+    }
+}
+
 } // namespace
+
+IRList Optimizer::copyPropagation(const IRList& ir) {
+    IRList result;
+    std::unordered_map<std::string, std::string> copies;
+
+    for (auto instr : ir) {
+        if (hasControlFlowBoundary(instr.op)) {
+            copies.clear();
+            result.push_back(instr);
+            continue;
+        }
+
+        if (!instr.src1.empty()) instr.src1 = resolveCopy(copies, instr.src1);
+        if (!instr.src2.empty()) instr.src2 = resolveCopy(copies, instr.src2);
+
+        if (!instr.dst.empty()) eraseCopiesTo(copies, instr.dst);
+
+        if (instr.op == IROp::ASSIGN && isTemp(instr.dst) && !instr.src1.empty()) {
+            copies[instr.dst] = instr.src1;
+        }
+
+        if (instr.op == IROp::STORE || instr.op == IROp::CALL) {
+            copies.clear();
+        }
+
+        result.push_back(instr);
+    }
+
+    return result;
+}
 
 IRList Optimizer::constantFolding(const IRList& ir) {
     IRList result;
@@ -134,7 +195,33 @@ IRList Optimizer::constantFolding(const IRList& ir) {
                 }
             } else {
                 constValues.erase(instr.dst);
-                result.push_back(instr);
+                if (instr.op == IROp::ADD && rhs && *rhs == 0) {
+                    result.push_back(IRInstr::assign(instr.dst, instr.src1));
+                } else if (instr.op == IROp::ADD && lhs && *lhs == 0) {
+                    result.push_back(IRInstr::assign(instr.dst, instr.src2));
+                } else if (instr.op == IROp::SUB && rhs && *rhs == 0) {
+                    result.push_back(IRInstr::assign(instr.dst, instr.src1));
+                } else if (instr.op == IROp::MUL && ((rhs && *rhs == 1) || (lhs && *lhs == 1))) {
+                    result.push_back(IRInstr::assign(instr.dst, (rhs && *rhs == 1) ? instr.src1 : instr.src2));
+                } else if (instr.op == IROp::MUL && ((rhs && *rhs == 0) || (lhs && *lhs == 0))) {
+                    constValues[instr.dst] = 0;
+                    result.push_back(IRInstr::li(instr.dst, 0));
+                } else if (instr.op == IROp::DIV && rhs && *rhs == 1) {
+                    result.push_back(IRInstr::assign(instr.dst, instr.src1));
+                } else if (instr.op == IROp::MOD && rhs && *rhs == 1) {
+                    constValues[instr.dst] = 0;
+                    result.push_back(IRInstr::li(instr.dst, 0));
+                } else if ((instr.op == IROp::EQ || instr.op == IROp::LE || instr.op == IROp::GE) &&
+                           instr.src1 == instr.src2) {
+                    constValues[instr.dst] = 1;
+                    result.push_back(IRInstr::li(instr.dst, 1));
+                } else if ((instr.op == IROp::NE || instr.op == IROp::LT || instr.op == IROp::GT) &&
+                           instr.src1 == instr.src2) {
+                    constValues[instr.dst] = 0;
+                    result.push_back(IRInstr::li(instr.dst, 0));
+                } else {
+                    result.push_back(instr);
+                }
             }
         } else if (instr.op == IROp::NEG || instr.op == IROp::NOT) {
             auto value = getConst(instr.src1);
@@ -167,11 +254,23 @@ IRList Optimizer::constantFolding(const IRList& ir) {
 IRList Optimizer::deadCodeElimination(const IRList& ir) {
     // Count uses of each temporary variable
     std::unordered_map<std::string, int> useCount;
+    std::unordered_set<std::string> globals;
+    std::unordered_map<std::string, int> localLoadCount;
+    std::unordered_map<std::string, int> localRefCount;
     for (const auto& instr : ir) {
         if (isTemp(instr.src1))
             useCount[instr.src1]++;
         if (isTemp(instr.src2))
             useCount[instr.src2]++;
+        if (instr.op == IROp::DECL && instr.src1 == "global")
+            globals.insert(instr.dst);
+        if (instr.op == IROp::LOAD && !isTemp(instr.src1)) {
+            localLoadCount[instr.src1]++;
+            localRefCount[instr.src1]++;
+        }
+        if (instr.op == IROp::STORE && !isTemp(instr.dst)) {
+            localRefCount[instr.dst]++;
+        }
     }
 
     IRList result;
@@ -182,6 +281,12 @@ IRList Optimizer::deadCodeElimination(const IRList& ir) {
             if (useCount[instr.dst] == 0) {
                 isDead = !hasSideEffect(instr.op);
             }
+        } else if (instr.op == IROp::STORE && !globals.count(instr.dst) &&
+                   localLoadCount[instr.dst] == 0) {
+            isDead = true;
+        } else if (instr.op == IROp::DECL && instr.src1 == "local" &&
+                   localRefCount[instr.dst] == 0) {
+            isDead = true;
         }
         if (!isDead) {
             result.push_back(instr);

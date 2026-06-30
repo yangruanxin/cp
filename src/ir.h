@@ -37,7 +37,7 @@ enum class IROp {
 
     // 赋值/变量
     ASSIGN,        // dst = src1
-    DECL,          // 声明变量: dst = 变量名, src1 = "global"/"local", intValue = 初值
+    DECL,          // 声明变量: dst = 变量名, src1 = "global"/"local"/"param", intValue = 初值
     LOAD,          // dst = MEM[src1 + intValue(offset)]
     STORE,         // MEM[dst + intValue(offset)] = src1
 
@@ -78,6 +78,9 @@ struct IRInstr {
     }
     static IRInstr decl(const std::string& name, bool global, int initVal) {
         return {IROp::DECL, name, global ? "global" : "local", {}, initVal, {}};
+    }
+    static IRInstr param(const std::string& name) {
+        return {IROp::DECL, name, "param", {}, 0, {}};
     }
     static IRInstr load(const std::string& d, const std::string& base, int off) {
         return {IROp::LOAD, d, base, {}, off, {}};

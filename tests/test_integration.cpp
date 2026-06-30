@@ -7,6 +7,7 @@
 #include <iostream>
 #include <cassert>
 #include <sstream>
+#include <vector>
 
 std::string compile(const std::string& source, bool optimize = false) {
     Lexer lexer(source);
@@ -21,6 +22,20 @@ std::string compile(const std::string& source, bool optimize = false) {
     }
     CodeGenerator cg;
     return cg.generate(ir);
+}
+
+IRList makeIr(const std::string& source, bool optimize = false) {
+    Lexer lexer(source);
+    auto tokens = lexer.tokenize();
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    IRGenerator irGen;
+    IRList ir = irGen.generate(ast);
+    if (optimize) {
+        Optimizer opt;
+        ir = opt.optimize(ir);
+    }
+    return ir;
 }
 
 int main() {
@@ -100,6 +115,76 @@ int main() {
     std::string asm7 = compile(src7, true);
     assert(!asm7.empty());
     std::cout << "Integration Test 7 PASS: short-circuit logic with -opt\n";
+
+    // Test 8: block scope shadowing should use distinct IR names
+    std::string src8 = R"(
+        int main() {
+            int x = 1;
+            {
+                int x = 2;
+                x = x + 1;
+            }
+            return x;
+        }
+    )";
+    IRList ir8 = makeIr(src8);
+    std::vector<std::string> localDecls;
+    for (const auto& in : ir8) {
+        if (in.op == IROp::DECL && in.src1 == "local") {
+            localDecls.push_back(in.dst);
+        }
+    }
+    assert(localDecls.size() >= 2);
+    assert(localDecls[0] != localDecls[1]);
+    std::cout << "Integration Test 8 PASS: scoped shadowing names\n";
+
+    // Test 9: mutable globals must be loaded from memory after stores
+    std::string src9 = R"(
+        int g = 1;
+        int main() {
+            g = 2;
+            return g;
+        }
+    )";
+    IRList ir9 = makeIr(src9, true);
+    bool hasGlobalStore = false;
+    bool hasGlobalLoad = false;
+    for (const auto& in : ir9) {
+        if (in.op == IROp::STORE && in.dst == "g") hasGlobalStore = true;
+        if (in.op == IROp::LOAD && in.src1 == "g") hasGlobalLoad = true;
+    }
+    assert(hasGlobalStore);
+    assert(hasGlobalLoad);
+    std::cout << "Integration Test 9 PASS: mutable global load/store\n";
+
+    // Test 10: void function call as a statement
+    std::string src10 = R"(
+        void touch() {
+            return;
+        }
+        int main() {
+            touch();
+            return 1;
+        }
+    )";
+    std::string asm10 = compile(src10, true);
+    assert(!asm10.empty());
+    assert(asm10.find("call touch") != std::string::npos);
+    std::cout << "Integration Test 10 PASS: void call statement\n";
+
+    // Test 11: many locals should not emit out-of-range stack offsets directly
+    std::ostringstream src11;
+    src11 << "int main(){\n";
+    for (int i = 0; i < 700; i++) {
+        src11 << "int v" << i << " = " << i << ";\n";
+    }
+    src11 << "return v699;\n}\n";
+    std::string asm11 = compile(src11.str(), false);
+    assert(!asm11.empty());
+    assert(asm11.find("add t3, sp, t3") != std::string::npos ||
+           asm11.find("add t0, sp, t0") != std::string::npos ||
+           asm11.find("add t1, sp, t1") != std::string::npos);
+    std::cout << "Integration Test 11 PASS: many locals large stack frame\n";
 
     // Print a sample
     std::cout << "\n=== Sample assembly output ===\n" << asm1 << "===\n";

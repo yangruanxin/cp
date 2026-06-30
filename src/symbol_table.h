@@ -8,6 +8,7 @@
 
 struct Symbol {
     std::string name;
+    std::string irName;
     bool isConst;
     bool isGlobal;
     int value;           // for consts with known value
@@ -24,8 +25,9 @@ public:
     void enterScope();
     void exitScope();
 
-    bool addVariable(const std::string& name, bool isConst, bool isGlobal,
-                     int value = 0, bool valueKnown = false);
+    bool addVariable(const std::string& name, const std::string& irName,
+                     bool isConst, bool isGlobal, int value = 0,
+                     bool valueKnown = false);
     bool addFunction(const std::string& name, FuncType returnType,
                      const std::vector<FuncType>& paramTypes);
 
