@@ -30,6 +30,28 @@ CodeGenerator::Kind CodeGenerator::classify(const std::string& op) const {
 }
 
 // ------------------------------------------------------------
+// 在偏移量可能超过 12 位有符号立即数范围时使用辅助寄存器
+// ------------------------------------------------------------
+void CodeGenerator::emitSW(const std::string& reg, int offset, const std::string& base) {
+    if (offset < -2048 || offset > 2047) {
+        emit("    li t5, " + std::to_string(offset));
+        emit("    add t5, " + base + ", t5");
+        emit("    sw " + reg + ", 0(t5)");
+    } else {
+        emit("    sw " + reg + ", " + std::to_string(offset) + "(" + base + ")");
+    }
+}
+void CodeGenerator::emitLW(const std::string& reg, int offset, const std::string& base) {
+    if (offset < -2048 || offset > 2047) {
+        emit("    li t5, " + std::to_string(offset));
+        emit("    add t5, " + base + ", t5");
+        emit("    lw " + reg + ", 0(t5)");
+    } else {
+        emit("    lw " + reg + ", " + std::to_string(offset) + "(" + base + ")");
+    }
+}
+
+// ------------------------------------------------------------
 // 载入 / 存储一个操作数
 // ------------------------------------------------------------
 void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
@@ -40,7 +62,7 @@ void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
         case Kind::SLOT: {
             auto it = slotOff.find(op);
             int off = (it != slotOff.end()) ? it->second : 0;
-            emit("    lw " + target + ", " + std::to_string(off) + "(sp)");
+            emitLW(target, off, "sp");
             break;
         }
         case Kind::GLOBAL:
@@ -65,7 +87,7 @@ void CodeGenerator::storeFromReg(const std::string& reg, const std::string& op,
         case Kind::SLOT: {
             auto it = slotOff.find(op);
             int off = (it != slotOff.end()) ? it->second : 0;
-            emit("    sw " + reg + ", " + std::to_string(off) + "(sp)");
+            emitSW(reg, off, "sp");
             break;
         }
         case Kind::GLOBAL:
@@ -310,16 +332,16 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
     } else {
         emit("    addi sp, sp, -" + std::to_string(frameSize));
     }
-    emit("    sw ra, " + std::to_string(raOff) + "(sp)");
+    emitSW("ra", raOff, "sp");
     for (size_t i = 0; i < params.size(); i++) {
         int off = slotOff[params[i]];
         if (i < 8) {
-            emit("    sw a" + std::to_string(i) + ", " + std::to_string(off) + "(sp)");
+            emitSW("a" + std::to_string(i), off, "sp");
         } else {
             // 第 9 个及以后的入参在调用者栈帧：本帧建立后位于 sp+frameSize+...
             int inOff = frameSize + (int)(i - 8) * 4;
-            emit("    lw t0, " + std::to_string(inOff) + "(sp)");
-            emit("    sw t0, " + std::to_string(off) + "(sp)");
+            emitLW("t0", inOff, "sp");
+            emitSW("t0", off, "sp");
         }
     }
 
@@ -331,7 +353,7 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
 
     // ---- epilogue ----
     emit(epiLabel + ":");
-    emit("    lw ra, " + std::to_string(raOff) + "(sp)");
+    emitLW("ra", raOff, "sp");
     if (frameSize > 2047) {
         emit("    li t0, " + std::to_string(frameSize));
         emit("    add sp, sp, t0");

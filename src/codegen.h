@@ -48,6 +48,8 @@ private:
     enum class Kind { ZERO, SLOT, GLOBAL, AREG, UNKNOWN };
 
     void emit(const std::string& s);
+    void emitSW(const std::string& reg, int offset, const std::string& base);
+    void emitLW(const std::string& reg, int offset, const std::string& base);
     void emitGlobals(const IRList& ir);
 
     // 处理 [begin, end] 区间（含 FUNC_BEGIN..FUNC_END）的一个函数。
