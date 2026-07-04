@@ -20,10 +20,11 @@ bool CodeGenerator::isAReg(const std::string& op) const {
 CodeGenerator::Kind CodeGenerator::classify(const std::string& op) const {
     if (op.empty()) return Kind::ZERO;
     if (op[0] == '%') return Kind::SLOT;                 // 临时量
-    if (globals.count(op)) return Kind::GLOBAL;          // 全局变量/常量
+    // 先查栈槽（局部变量/形参），再查全局。
+    // 顺序重要：局部可以遮蔽同名全局。
     if (slotOff.count(op)) return Kind::SLOT;            // 已分配槽的局部/形参
-    // 已声明的局部但尚未分配槽（不应发生，保险起见）。
-    if (declaredLocals.count(op)) return Kind::SLOT;
+    if (declaredLocals.count(op)) return Kind::SLOT;     // 声明的局部（保险）
+    if (globals.count(op)) return Kind::GLOBAL;          // 全局变量/常量
     if (isAReg(op)) return Kind::AREG;                   // a0..a7 伪寄存器
     return Kind::UNKNOWN;
 }
@@ -145,11 +146,12 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
             if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
             return;
         }
-        if (globals.count(op)) return;            // 全局：不占栈
+        // 先分配局部（含遮蔽全局的同名局部），再跳过全局
         if (declaredLocals.count(op)) {           // 局部/形参
             if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
             return;
         }
+        if (globals.count(op)) return;            // 全局：不占栈
         // a0..a7 伪寄存器与未知名（如返回值 a0）不占栈。
     };
 
@@ -302,7 +304,12 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
     emit(name + ":");
 
     // ---- prologue ----
-    emit("    addi sp, sp, -" + std::to_string(frameSize));
+    if (frameSize > 2047) {
+        emit("    li t0, " + std::to_string(frameSize));
+        emit("    sub sp, sp, t0");
+    } else {
+        emit("    addi sp, sp, -" + std::to_string(frameSize));
+    }
     emit("    sw ra, " + std::to_string(raOff) + "(sp)");
     for (size_t i = 0; i < params.size(); i++) {
         int off = slotOff[params[i]];
@@ -325,7 +332,12 @@ void CodeGenerator::genFunction(const IRList& ir, size_t begin, size_t end) {
     // ---- epilogue ----
     emit(epiLabel + ":");
     emit("    lw ra, " + std::to_string(raOff) + "(sp)");
-    emit("    addi sp, sp, " + std::to_string(frameSize));
+    if (frameSize > 2047) {
+        emit("    li t0, " + std::to_string(frameSize));
+        emit("    add sp, sp, t0");
+    } else {
+        emit("    addi sp, sp, " + std::to_string(frameSize));
+    }
     emit("    ret");
 }
 
