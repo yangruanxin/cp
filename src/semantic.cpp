@@ -3,7 +3,43 @@
 
 IRGenerator::IRGenerator()
     : labelCounter(0), tempCounter(0), inLoop(false), hasReturn(false),
-      hasError(false) {}
+      hasError(false), declIdCounter(0) {
+    nameStack.emplace_back(); // global scope
+}
+
+void IRGenerator::enterScope() {
+    nameStack.emplace_back();
+    symTable.enterScope();
+}
+
+void IRGenerator::exitScope() {
+    nameStack.pop_back();
+    symTable.exitScope();
+}
+
+std::string IRGenerator::getIRName(const std::string& srcName) {
+    for (auto it = nameStack.rbegin(); it != nameStack.rend(); ++it) {
+        auto found = it->find(srcName);
+        if (found != it->end()) return found->second;
+    }
+    return srcName; // not declared locally -> global or param
+}
+
+std::string IRGenerator::declareIRName(const std::string& srcName) {
+    // Check if this name already exists in current or outer scopes
+    for (auto it = nameStack.rbegin(); it != nameStack.rend(); ++it) {
+        auto found = it->find(srcName);
+        if (found != it->end()) {
+            // Shadows an existing variable, create unique name
+            std::string unique = srcName + "_" + std::to_string(declIdCounter++);
+            nameStack.back()[srcName] = unique;
+            return unique;
+        }
+    }
+    // First declaration of this name, use as-is
+    nameStack.back()[srcName] = srcName;
+    return srcName;
+}
 
 std::string IRGenerator::newLabel() {
     return ".L" + std::to_string(labelCounter++);
@@ -137,14 +173,15 @@ void IRGenerator::visitFuncDef(const std::unique_ptr<FuncDef>& func) {
 
     ir.push_back(IRInstr::funcBegin(func->name));
 
-    symTable.enterScope();
+    enterScope();
     for (const auto& p : func->params) {
         defineVariable(p.name, false, false);
-        ir.push_back(IRInstr::decl(p.name, false, 0));
+        std::string irName = declareIRName(p.name);
+        ir.push_back(IRInstr::decl(irName, false, 0));
     }
 
     bool allPathsReturn = visitStmt(func->body);
-    symTable.exitScope();
+    exitScope();
 
     if (currentFuncReturnType == FuncType::INT && !allPathsReturn) {
         error("function '" + func->name + "' must return a value on all paths");
@@ -158,13 +195,13 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
 
     switch (stmt->kind) {
         case StmtKind::BLOCK: {
-            symTable.enterScope();
+            enterScope();
             bool returned = false;
             for (const auto& s : stmt->stmts) {
                 bool stmtReturns = visitStmt(s);
                 returned = returned || stmtReturns;
             }
-            symTable.exitScope();
+            exitScope();
             return returned;
         }
         case StmtKind::EMPTY:
@@ -182,7 +219,8 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
                 error("cannot assign to const '" + stmt->varName + "'");
             }
             std::string val = visitExpr(stmt->expr);
-            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            std::string irName = getIRName(stmt->varName);
+            ir.push_back(IRInstr::store(irName, 0, val));
             return false;
         }
         case StmtKind::DECL:
@@ -195,13 +233,14 @@ bool IRGenerator::visitStmt(const std::unique_ptr<Stmt>& stmt) {
             defineVariable(stmt->varName, isConst, symTable.isGlobalScope(),
                            constValue.known ? constValue.value : 0,
                            isConst && constValue.known);
-            ir.push_back(IRInstr::decl(stmt->varName, symTable.isGlobalScope(),
+            std::string irName = declareIRName(stmt->varName);
+            ir.push_back(IRInstr::decl(irName, symTable.isGlobalScope(),
                                        constValue.known ? constValue.value : 0));
             std::string val = constValue.known ? newTemp() : visitExpr(stmt->init);
             if (constValue.known) {
                 ir.push_back(IRInstr::li(val, constValue.value));
             }
-            ir.push_back(IRInstr::store(stmt->varName, 0, val));
+            ir.push_back(IRInstr::store(irName, 0, val));
             return false;
         }
         case StmtKind::IF: {
@@ -311,7 +350,8 @@ std::string IRGenerator::visitExpr(const std::unique_ptr<Expr>& expr, bool allow
                 return t;
             }
             std::string t = newTemp();
-            ir.push_back(IRInstr::load(t, expr->name, 0));
+            std::string irName = getIRName(expr->name);
+            ir.push_back(IRInstr::load(t, irName, 0));
             return t;
         }
         case ExprKind::UNARY: {

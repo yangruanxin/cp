@@ -30,6 +30,14 @@ private:
     std::string loopBeginLabel;
     std::string loopEndLabel;
 
+    // 作用域遮蔽管理：为每个变量分配唯一 IR 名称
+    int declIdCounter;
+    std::vector<std::unordered_map<std::string, std::string>> nameStack;
+    void enterScope();
+    void exitScope();
+    std::string getIRName(const std::string& srcName);
+    std::string declareIRName(const std::string& srcName);
+
     std::string newLabel();
     std::string newTemp();
     void error(const std::string& message);
