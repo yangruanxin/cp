@@ -5,6 +5,9 @@ cmake-build-*/
 *.obj
 *.exe
 
+# Compiler artifacts
+*.pdb
+
 # IDE
 .vscode/
 .idea/
