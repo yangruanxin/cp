@@ -73,9 +73,6 @@ Token Lexer::readIdentifier() {
 Token Lexer::readNumber() {
     int startCol = column;
     std::string value;
-    if (peek() == '-') {
-        value += advance();
-    }
     while (std::isdigit(peek())) {
         value += advance();
     }
@@ -96,13 +93,8 @@ std::vector<Token> Lexer::tokenize() {
         } else if (std::isdigit(c)) {
             tokens.push_back(readNumber());
         } else if (c == '-') {
-            // Check if negative number
-            if (pos + 1 < source.size() && std::isdigit(source[pos + 1])) {
-                tokens.push_back(readNumber());
-            } else {
-                advance();
-                tokens.push_back({TokenType::MINUS, "-", line, startCol});
-            }
+            advance();
+            tokens.push_back({TokenType::MINUS, "-", line, startCol});
         } else {
             advance();
             switch (c) {

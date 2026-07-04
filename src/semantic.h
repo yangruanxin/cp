@@ -16,6 +16,7 @@ class IRGenerator {
 public:
     IRGenerator();
     IRList generate(const std::unique_ptr<CompUnit>& unit);
+    bool hasErrors() const { return hasError; }
 
 private:
     SymbolTable symTable;

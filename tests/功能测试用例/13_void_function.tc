@@ -1,0 +1,10 @@
+int result;
+
+void set_result(int v) {
+    result = v;
+}
+
+int main() {
+    set_result(7);
+    return result;
+}

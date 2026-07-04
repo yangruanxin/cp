@@ -188,6 +188,11 @@ std::unique_ptr<FuncDef> Parser::parseFuncDefWithType(FuncType type) {
 
 std::vector<Param> Parser::parseParams() {
     std::vector<Param> params;
+    if (check(TokenType::VOID) && !check(TokenType::RPAREN)) {
+        // int f(void) is valid but int f(void, int x) is not;
+        // consume the 'void' and treat it as no params
+        return params;
+    }
     if (check(TokenType::INT)) {
         advance();
         params.push_back({expect(TokenType::ID).value});

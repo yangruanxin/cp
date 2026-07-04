@@ -1,11 +1,15 @@
-const int base = 3;
-int g = 4;
+const int BASE = 10;
 
-int add(int a, int b) {
-    return a + b;
+int add(int x, int y) {
+    return x + y;
+}
+
+int mul(int x, int y) {
+    return x * y;
 }
 
 int main() {
-    int x = add(base, g);
-    return x * 2;
+    int a = add(BASE, 5);
+    int b = mul(a, 2);
+    return b;
 }

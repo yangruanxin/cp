@@ -1,5 +1,8 @@
 int main() {
-    int a = 1 + 2 * 3;
-    int b = (a - 4) * 5;
-    return b + 1;
+    int a = 1 + 2;
+    int b = 3 * 4;
+    int c = 10 - 5;       // subtraction with no spaces
+    int d = 20 / 3;
+    int e = 2 * (3 + 4);
+    return (a + b + c + d + e) % 100;
 }
