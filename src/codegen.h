@@ -44,8 +44,9 @@ private:
     int raOff = 0;
     int outArgBytes = 0;
     std::string epiLabel;
+    bool mappingEnabled = false;
 
-    enum class Kind { ZERO, SLOT, GLOBAL, AREG, UNKNOWN };
+    enum class Kind { ZERO, REGISTER, SLOT, GLOBAL, AREG, UNKNOWN };
 
     void emit(const std::string& s);
     void emitSW(const std::string& reg, int offset, const std::string& base);
@@ -59,6 +60,8 @@ private:
 
     Kind classify(const std::string& op) const;
     bool isAReg(const std::string& op) const;
+    // %tN (N≤6) → tN, otherwise "" 
+    std::string regForTemp(const std::string& op) const;
 
     // 将操作数 op 的值强制载入物理寄存器 target。
     void loadInto(const std::string& op, const std::string& target);

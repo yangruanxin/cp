@@ -17,9 +17,20 @@ bool CodeGenerator::isAReg(const std::string& op) const {
     return op.size() == 2 && op[0] == 'a' && op[1] >= '0' && op[1] <= '7';
 }
 
+std::string CodeGenerator::regForTemp(const std::string& op) const {
+    if (op.size() < 3 || op[0] != '%' || op[1] != 't') return "";
+    int n = 0;
+    try { n = std::stoi(op.substr(2)); } catch (...) { return ""; }
+    if (n >= 0 && n <= 6) return "t" + std::to_string(n);
+    return "";
+}
+
 CodeGenerator::Kind CodeGenerator::classify(const std::string& op) const {
     if (op.empty()) return Kind::ZERO;
-    if (op[0] == '%') return Kind::SLOT;                 // 临时量
+    if (op[0] == '%') {
+        if (mappingEnabled && !regForTemp(op).empty()) return Kind::REGISTER;
+        return Kind::SLOT;  // %t7+ 或 mappingDisabled → 栈
+    }
     // 先查栈槽（局部变量/形参），再查全局。
     // 顺序重要：局部可以遮蔽同名全局。
     if (slotOff.count(op)) return Kind::SLOT;            // 已分配槽的局部/形参
@@ -56,6 +67,11 @@ void CodeGenerator::emitLW(const std::string& reg, int offset, const std::string
 // ------------------------------------------------------------
 void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
     switch (classify(op)) {
+        case Kind::REGISTER: {
+            std::string reg = regForTemp(op);
+            if (reg != target) emit("    mv " + target + ", " + reg);
+            break;
+        }
         case Kind::ZERO:
             emit("    li " + target + ", 0");
             break;
@@ -82,6 +98,11 @@ void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
 void CodeGenerator::storeFromReg(const std::string& reg, const std::string& op,
                                  const std::string& scratch) {
     switch (classify(op)) {
+        case Kind::REGISTER: {
+            std::string dst = regForTemp(op);
+            if (dst != reg) emit("    mv " + dst + ", " + reg);
+            break;
+        }
         case Kind::ZERO:
             break;  // 写入 zero/丢弃，无操作
         case Kind::SLOT: {
@@ -149,6 +170,7 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     slotOff.clear();
     declaredLocals.clear();
     pendingArgs.clear();
+    mappingEnabled = false;
 
     collectParams(ir, begin, end);
     for (const auto& p : params) declaredLocals.insert(p);
@@ -164,7 +186,8 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     std::vector<std::string> order;  // 保持确定性的槽分配顺序
     auto want = [&](const std::string& op) {
         if (op.empty()) return;
-        if (op[0] == '%') {                       // 临时量
+        if (op[0] == '%') {
+            if (mappingEnabled && !regForTemp(op).empty()) return;  // %t0..%t6 → 寄存器
             if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
             return;
         }
@@ -189,6 +212,15 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     }
 
     outArgBytes = (maxArgCount > 8) ? (maxArgCount - 8) * 4 : 0;
+
+    // 检查函数内是否有 CALL 指令
+    bool hasCall = false;
+    for (size_t i = begin; i < end && !hasCall; i++) {
+        if (ir[i].op == IROp::CALL) hasCall = true;
+    }
+
+    // 有 CALL 时，不使用寄存器映射（临时值可能跨调用存活）
+    mappingEnabled = !hasCall;
 
     int idx = 0;
     for (const auto& name : order) {
@@ -216,10 +248,15 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
             emit("    bnez t0, " + in.label);
             break;
 
-        case IROp::LOAD_IMM:
-            emit("    li t0, " + std::to_string(in.intValue));
-            storeFromReg("t0", in.dst, "t1");
+        case IROp::LOAD_IMM: {
+            if (classify(in.dst) == Kind::REGISTER) {
+                emit("    li " + regForTemp(in.dst) + ", " + std::to_string(in.intValue));
+            } else {
+                emit("    li t0, " + std::to_string(in.intValue));
+                storeFromReg("t0", in.dst, "t1");
+            }
             break;
+        }
 
         case IROp::ADD: case IROp::SUB: case IROp::MUL:
         case IROp::DIV: case IROp::MOD:
@@ -260,26 +297,45 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
             storeFromReg("t2", in.dst, "t3");
             break;
 
-        case IROp::ASSIGN:
-            loadInto(in.src1, "t0");
-            storeFromReg("t0", in.dst, "t1");
+        case IROp::ASSIGN: {
+            if (classify(in.dst) == Kind::REGISTER) {
+                std::string rd = regForTemp(in.dst);
+                loadInto(in.src1, rd);
+            } else {
+                loadInto(in.src1, "t0");
+                storeFromReg("t0", in.dst, "t1");
+            }
             break;
+        }
 
         case IROp::DECL:
             // 全局已在 .data 处理；局部仅占栈槽，初值由其后的 ASSIGN 完成；
             // 形参由 prologue 从 a 寄存器写入。此处无需生成代码。
             break;
 
-        case IROp::LOAD:
+        case IROp::LOAD: {
             // dst = 变量 src1 的值
-            loadInto(in.src1, "t0");
-            storeFromReg("t0", in.dst, "t1");
+            if (classify(in.dst) == Kind::REGISTER) {
+                std::string r = regForTemp(in.dst);
+                loadInto(in.src1, r);
+            } else {
+                loadInto(in.src1, "t0");
+                storeFromReg("t0", in.dst, "t1");
+            }
             break;
-        case IROp::STORE:
+        }
+        case IROp::STORE: {
             // 变量 dst = src1
-            loadInto(in.src1, "t0");
-            storeFromReg("t0", in.dst, "t1");
+            if (classify(in.src1) == Kind::REGISTER) {
+                std::string r = regForTemp(in.src1);
+                std::string scratch = (r == "t1") ? "t0" : "t1";
+                storeFromReg(r, in.dst, scratch);
+            } else {
+                loadInto(in.src1, "t0");
+                storeFromReg("t0", in.dst, "t1");
+            }
             break;
+        }
 
         case IROp::ARG:
             pendingArgs.emplace_back(in.src1, in.intValue);
@@ -287,7 +343,9 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
         case IROp::CALL: {
             // 在调用前一刻才把实参载入 a 寄存器 / 出参栈区，
             // 从而不受实参求值顺序（可能含嵌套调用）影响。
-            for (const auto& [op, idx] : pendingArgs) {
+            for (const auto& pa : pendingArgs) {
+                const std::string& op = pa.first;
+                int idx = pa.second;
                 if (idx < 8) {
                     loadInto(op, "a" + std::to_string(idx));
                 } else {
