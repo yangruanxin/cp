@@ -145,7 +145,10 @@ void IRGenerator::visitCompUnit(const std::unique_ptr<CompUnit>& unit) {
             error("global variable '" + decl->varName + "' initializer must be constant in this IR backend");
         }
         int value = constValue.known ? constValue.value : 0;
-        defineVariable(decl->varName, isConst, true, value, isConst || constValue.known);
+        // 只有 const 才能 valueKnown=true（编译期常量折叠），
+        // 非 const 全局变量虽然初始化值已知，但运行时可修改，不能折叠。
+        bool valKnown = isConst && constValue.known;
+        defineVariable(decl->varName, isConst, true, value, valKnown);
         ir.push_back(IRInstr::decl(decl->varName, true, value));
     }
 
