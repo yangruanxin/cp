@@ -34,8 +34,9 @@ CodeGenerator::Kind CodeGenerator::classify(const std::string& op) const {
         if (mappingEnabled && !regForTemp(op).empty()) return Kind::REGISTER;
         return Kind::SLOT;  // %t7+ 或 mappingDisabled → 栈
     }
-    // 先查栈槽（局部变量/形参），再查全局。
+    // 先查寄存器已分配的局部变量，再查栈槽（局部变量/形参），最后查全局。
     // 顺序重要：局部可以遮蔽同名全局。
+    if (varRegMap.count(op)) return Kind::VAREG;         // 已分配物理寄存器的局部变量
     if (slotOff.count(op)) return Kind::SLOT;            // 已分配槽的局部/形参
     if (declaredLocals.count(op)) return Kind::SLOT;     // 声明的局部（保险）
     if (globals.count(op)) return Kind::GLOBAL;          // 全局变量/常量
@@ -84,6 +85,11 @@ void CodeGenerator::loadInto(const std::string& op, const std::string& target) {
             emitLW(target, off, "sp");
             break;
         }
+        case Kind::VAREG: {
+            std::string reg = varRegMap.at(op);
+            if (reg != target) emit("    mv " + target + ", " + reg);
+            break;
+        }
         case Kind::GLOBAL:
             emit("    la " + target + ", " + op);
             emit("    lw " + target + ", 0(" + target + ")");
@@ -112,6 +118,11 @@ void CodeGenerator::storeFromReg(const std::string& reg, const std::string& op,
             auto it = slotOff.find(op);
             int off = (it != slotOff.end()) ? it->second : 0;
             emitSW(reg, off, "sp");
+            break;
+        }
+        case Kind::VAREG: {
+            std::string dst = varRegMap.at(op);
+            if (dst != reg) emit("    mv " + dst + ", " + reg);
             break;
         }
         case Kind::GLOBAL:
@@ -158,9 +169,23 @@ void CodeGenerator::collectParams(const IRList& ir, size_t begin, size_t end) {
     for (size_t i = begin + 1; i < end; i++) {
         const auto& in = ir[i];
         if (in.op != IROp::DECL || in.src1 != "local") continue;
-        bool followedByInit =
-            (i + 1 < end) && ir[i + 1].op == IROp::ASSIGN && ir[i + 1].dst == in.dst;
-        if (!followedByInit) {
+        // 向前扫描到同名的 ASSIGN（中间可以有 LI 等指令），如果遇到另一个
+        // DECL、LABEL、FUNC_END 或 FUNC_BEGIN，则此 DECL 不是局部初始化而是形参。
+        bool foundInit = false;
+        for (size_t j = i + 1; j < end; j++) {
+            const auto& next = ir[j];
+            if (next.op == IROp::ASSIGN && next.dst == in.dst) {
+                foundInit = true; break;
+            }
+            if (next.op == IROp::STORE && next.dst == in.dst) {
+                foundInit = true; break;
+            }
+            if (next.op == IROp::DECL || next.op == IROp::LABEL ||
+                next.op == IROp::FUNC_END || next.op == IROp::FUNC_BEGIN) {
+                break;
+            }
+        }
+        if (!foundInit) {
             params.push_back(in.dst);
         }
     }
@@ -173,6 +198,7 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     slotOff.clear();
     declaredLocals.clear();
     pendingArgs.clear();
+    varRegMap.clear();
     mappingEnabled = false;
 
     collectParams(ir, begin, end);
@@ -185,7 +211,6 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
             declaredLocals.insert(in.dst);
         }
     }
-
     std::vector<std::string> order;  // 保持确定性的槽分配顺序
     auto want = [&](const std::string& op) {
         if (op.empty()) return;
@@ -213,7 +238,6 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
             maxArgCount = std::max(maxArgCount, in.intValue + 1);
         }
     }
-
     outArgBytes = (maxArgCount > 8) ? (maxArgCount - 8) * 4 : 0;
 
     // 检查函数内是否有 CALL 指令
@@ -231,7 +255,23 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     }
     int numSlots = (int)order.size();
     raOff = outArgBytes + numSlots * 4;
-    frameSize = align16(raOff + 4);  // +4 给 ra
+
+    // 无 CALL 时，将局部变量分配到 callee-saved 寄存器 s2-s11
+    if (mappingEnabled) {
+        const char* sRegs[] = {"s2","s3","s4","s5","s6","s7","s8","s9","s10","s11"};
+        int maxVarRegs = 10;
+        int nextVarReg = 0;
+        for (const auto& name : order) {
+            if (nextVarReg >= maxVarRegs) break;
+            if (!declaredLocals.count(name)) continue;
+            // 形参保留在栈上（跨调用安全），不分配寄存器
+            bool isParam = false;
+            for (const auto& p : params) if (p == name) { isParam = true; break; }
+            if (isParam) continue;
+            varRegMap[name] = sRegs[nextVarReg++];
+        }
+    }
+    frameSize = align16(raOff + 4);
 }
 
 // ------------------------------------------------------------
@@ -373,6 +413,8 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
                 } else {
                     loadInto(in.src1, rd);
                 }
+            } else if (kd == Kind::VAREG) {
+                loadInto(in.src1, varRegMap.at(in.dst));
             } else if (kd == Kind::AREG && ks == Kind::REGISTER) {
                 emit("    mv " + in.dst + ", " + regForTemp(in.src1));
             } else {

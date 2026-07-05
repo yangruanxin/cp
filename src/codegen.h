@@ -46,7 +46,10 @@ private:
     std::string epiLabel;
     bool mappingEnabled = false;
 
-    enum class Kind { ZERO, REGISTER, SLOT, GLOBAL, AREG, UNKNOWN };
+    // 局部变量名 → 物理寄存器（无 CALL 时启用，将局部变量分配到 callee-saved s2-s11）
+    std::unordered_map<std::string, std::string> varRegMap;
+
+    enum class Kind { ZERO, REGISTER, VAREG, SLOT, GLOBAL, AREG, UNKNOWN };
 
     void emit(const std::string& s);
     void emitSW(const std::string& reg, int offset, const std::string& base);
