@@ -21,7 +21,10 @@ std::string CodeGenerator::regForTemp(const std::string& op) const {
     if (op.size() < 3 || op[0] != '%' || op[1] != 't') return "";
     int n = 0;
     try { n = std::stoi(op.substr(2)); } catch (...) { return ""; }
-    if (n >= 0 && n <= 6) return "t" + std::to_string(n);
+    if (n >= 0 && n <= 6) return "t" + std::to_string(n);     // t0-t6
+    if (n >= 7 && n <= 14) return "a" + std::to_string(n - 7); // a0-a7
+    if (n == 15) return "s0";
+    if (n == 16) return "s1";
     return "";
 }
 
@@ -187,7 +190,7 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     auto want = [&](const std::string& op) {
         if (op.empty()) return;
         if (op[0] == '%') {
-            if (mappingEnabled && !regForTemp(op).empty()) return;  // %t0..%t6 → 寄存器
+            if (mappingEnabled && !regForTemp(op).empty()) return;  // 寄存器映射，不占栈
             if (!slotOff.count(op)) { slotOff[op] = -1; order.push_back(op); }
             return;
         }
@@ -218,8 +221,7 @@ void CodeGenerator::prescan(const IRList& ir, size_t begin, size_t end) {
     for (size_t i = begin; i < end && !hasCall; i++) {
         if (ir[i].op == IROp::CALL) hasCall = true;
     }
-
-    // 有 CALL 时，不使用寄存器映射（临时值可能跨调用存活）
+    // 无 CALL 时使用寄存器映射；有 CALL 时全栈（跨调用存活值在栈上安全）
     mappingEnabled = !hasCall;
 
     int idx = 0;
@@ -243,10 +245,15 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
         case IROp::GOTO:
             emit("    j " + in.label);
             break;
-        case IROp::IF_GOTO:
-            loadInto(in.src1, "t0");
-            emit("    bnez t0, " + in.label);
+        case IROp::IF_GOTO: {
+            if (classify(in.src1) == Kind::REGISTER) {
+                emit("    bnez " + regForTemp(in.src1) + ", " + in.label);
+            } else {
+                loadInto(in.src1, "t0");
+                emit("    bnez t0, " + in.label);
+            }
             break;
+        }
 
         case IROp::LOAD_IMM: {
             if (classify(in.dst) == Kind::REGISTER) {
@@ -263,44 +270,111 @@ void CodeGenerator::genInstr(const IRInstr& in, bool nextIsFuncEnd) {
         case IROp::LT:  case IROp::GT:  case IROp::LE:
         case IROp::GE:  case IROp::EQ:  case IROp::NE:
         case IROp::AND: case IROp::OR: {
-            loadInto(in.src1, "t0");
-            loadInto(in.src2, "t1");
-            switch (in.op) {
-                case IROp::ADD: emit("    add t2, t0, t1"); break;
-                case IROp::SUB: emit("    sub t2, t0, t1"); break;
-                case IROp::MUL: emit("    mul t2, t0, t1"); break;
-                case IROp::DIV: emit("    div t2, t0, t1"); break;
-                case IROp::MOD: emit("    rem t2, t0, t1"); break;
-                case IROp::LT:  emit("    slt t2, t0, t1"); break;
-                case IROp::GT:  emit("    slt t2, t1, t0"); break;
-                case IROp::LE:  emit("    slt t2, t1, t0"); emit("    xori t2, t2, 1"); break;
-                case IROp::GE:  emit("    slt t2, t0, t1"); emit("    xori t2, t2, 1"); break;
-                case IROp::EQ:  emit("    sub t2, t0, t1"); emit("    seqz t2, t2"); break;
-                case IROp::NE:  emit("    sub t2, t0, t1"); emit("    snez t2, t2"); break;
-                case IROp::AND: emit("    snez t0, t0"); emit("    snez t1, t1");
-                                emit("    and t2, t0, t1"); break;
-                case IROp::OR:  emit("    or t2, t0, t1"); emit("    snez t2, t2"); break;
-                default: break;
+            // 如果 src1, src2, dst 都是寄存器映射，直接使用映射寄存器
+            Kind k1 = classify(in.src1), k2 = classify(in.src2), kd = classify(in.dst);
+            if (k1 == Kind::REGISTER && k2 == Kind::REGISTER && kd == Kind::REGISTER) {
+                std::string r1 = regForTemp(in.src1), r2 = regForTemp(in.src2), rd = regForTemp(in.dst);
+                auto bin = [&](const std::string& op, auto... args) {
+                    // For operations needing intermediate value, use rd as both temp and dest
+                };
+                switch (in.op) {
+                    case IROp::ADD: emit("    add " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::SUB: emit("    sub " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::MUL: emit("    mul " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::DIV: emit("    div " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::MOD: emit("    rem " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::LT:  emit("    slt " + rd + ", " + r1 + ", " + r2); break;
+                    case IROp::GT:  emit("    slt " + rd + ", " + r2 + ", " + r1); break;
+                    case IROp::LE:  emit("    slt " + rd + ", " + r2 + ", " + r1);
+                                    emit("    xori " + rd + ", " + rd + ", 1"); break;
+                    case IROp::GE:  emit("    slt " + rd + ", " + r1 + ", " + r2);
+                                    emit("    xori " + rd + ", " + rd + ", 1"); break;
+                    case IROp::EQ:  emit("    sub " + rd + ", " + r1 + ", " + r2);
+                                    emit("    seqz " + rd + ", " + rd); break;
+                    case IROp::NE:  emit("    sub " + rd + ", " + r1 + ", " + r2);
+                                    emit("    snez " + rd + ", " + rd); break;
+                    case IROp::AND: emit("    snez " + rd + ", " + r1);
+                                    emit("    snez " + r1 + ", " + r2);
+                                    emit("    and " + rd + ", " + rd + ", " + r1); break;
+                    case IROp::OR:  emit("    or " + rd + ", " + r1 + ", " + r2);
+                                    emit("    snez " + rd + ", " + rd); break;
+                    default: break;
+                }
+            } else {
+                loadInto(in.src1, "t0");
+                loadInto(in.src2, "t1");
+                switch (in.op) {
+                    case IROp::ADD: emit("    add t2, t0, t1"); break;
+                    case IROp::SUB: emit("    sub t2, t0, t1"); break;
+                    case IROp::MUL: emit("    mul t2, t0, t1"); break;
+                    case IROp::DIV: emit("    div t2, t0, t1"); break;
+                    case IROp::MOD: emit("    rem t2, t0, t1"); break;
+                    case IROp::LT:  emit("    slt t2, t0, t1"); break;
+                    case IROp::GT:  emit("    slt t2, t1, t0"); break;
+                    case IROp::LE:  emit("    slt t2, t1, t0"); emit("    xori t2, t2, 1"); break;
+                    case IROp::GE:  emit("    slt t2, t0, t1"); emit("    xori t2, t2, 1"); break;
+                    case IROp::EQ:  emit("    sub t2, t0, t1"); emit("    seqz t2, t2"); break;
+                    case IROp::NE:  emit("    sub t2, t0, t1"); emit("    snez t2, t2"); break;
+                    case IROp::AND: emit("    snez t0, t0"); emit("    snez t1, t1");
+                                    emit("    and t2, t0, t1"); break;
+                    case IROp::OR:  emit("    or t2, t0, t1"); emit("    snez t2, t2"); break;
+                    default: break;
+                }
+                storeFromReg("t2", in.dst, "t3");
             }
-            storeFromReg("t2", in.dst, "t3");
             break;
         }
 
-        case IROp::NEG:
-            loadInto(in.src1, "t0");
-            emit("    neg t2, t0");
-            storeFromReg("t2", in.dst, "t3");
+        case IROp::NEG: {
+            Kind kd = classify(in.dst);
+            if (kd == Kind::REGISTER) {
+                std::string rd = regForTemp(in.dst);
+                Kind ks = classify(in.src1);
+                if (ks == Kind::REGISTER) {
+                    emit("    neg " + rd + ", " + regForTemp(in.src1));
+                } else {
+                    loadInto(in.src1, rd);
+                    emit("    neg " + rd + ", " + rd);
+                }
+            } else {
+                loadInto(in.src1, "t0");
+                emit("    neg t2, t0");
+                storeFromReg("t2", in.dst, "t3");
+            }
             break;
-        case IROp::NOT:
-            loadInto(in.src1, "t0");
-            emit("    seqz t2, t0");
-            storeFromReg("t2", in.dst, "t3");
+        }
+        case IROp::NOT: {
+            Kind kd = classify(in.dst);
+            if (kd == Kind::REGISTER) {
+                std::string rd = regForTemp(in.dst);
+                Kind ks = classify(in.src1);
+                if (ks == Kind::REGISTER) {
+                    emit("    seqz " + rd + ", " + regForTemp(in.src1));
+                } else {
+                    loadInto(in.src1, rd);
+                    emit("    seqz " + rd + ", " + rd);
+                }
+            } else {
+                loadInto(in.src1, "t0");
+                emit("    seqz t2, t0");
+                storeFromReg("t2", in.dst, "t3");
+            }
             break;
+        }
 
         case IROp::ASSIGN: {
-            if (classify(in.dst) == Kind::REGISTER) {
+            Kind kd = classify(in.dst);
+            Kind ks = classify(in.src1);
+            if (kd == Kind::REGISTER) {
                 std::string rd = regForTemp(in.dst);
-                loadInto(in.src1, rd);
+                if (ks == Kind::REGISTER) {
+                    std::string rs = regForTemp(in.src1);
+                    if (rd != rs) emit("    mv " + rd + ", " + rs);
+                } else {
+                    loadInto(in.src1, rd);
+                }
+            } else if (kd == Kind::AREG && ks == Kind::REGISTER) {
+                emit("    mv " + in.dst + ", " + regForTemp(in.src1));
             } else {
                 loadInto(in.src1, "t0");
                 storeFromReg("t0", in.dst, "t1");
